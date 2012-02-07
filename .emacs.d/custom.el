@@ -9,9 +9,10 @@
  '(TeX-view-program-list (quote (("Okular" "okular -unique %o#src:%n`pwd`/./%b"))))
  '(TeX-view-program-selection (quote (((output-dvi style-pstricks) "dvips and gv") (output-dvi "xdvi") (output-pdf "Okular") (output-html "xdg-open"))))
  '(color-theme-selection "Taming Mr Arneson" nil (color-theme_seldefcustom))
+ '(require-final-newline nil)
  '(rfcview-index-location "/usr/share/doc/RFC/rfc-index.txt.gz")
  '(rfcview-rfc-location-pattern (quote ("/usr/share/doc/RFC/links/rfc%s.txt.gz" "/usr/share/doc/RFC/links/rfc%s.txt")))
- '(safe-local-variable-values (quote ((eval progn (flyspell-mode 1) (outline-minor-mode 1) (hide-body)) (eval flyspell-mode 1) (ispell-dictionary . "american") (eval hide-body)))))
+ '(safe-local-variable-values (quote ((eval progn (flyspell-mode 1) (outline-minor-mode 1) (goto-address-mode 1) (hide-body)) (eval progn (flyspell-mode 1) (outline-minor-mode 1) (hide-body)) (eval flyspell-mode 1) (ispell-dictionary . "american") (eval hide-body)))))
 (custom-set-faces
   ;; custom-set-faces was added by Custom.
   ;; If you edit it by hand, you could mess it up, so be careful.
