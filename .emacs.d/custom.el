@@ -11,6 +11,7 @@
  '(calendar-week-start-day 1)
  '(color-theme-selection "Taming Mr Arneson" nil (color-theme_seldefcustom))
  '(indicate-empty-lines t)
+ '(lpr-command "xpp")
  '(mouse-avoidance-mode (quote banish) nil (avoid))
  '(org-drill-optimal-factor-matrix (quote ((1 (2.1799999999999997 . 3.72) (2.6 . 4.14) (2.5 . 4.0) (1.7000000000000002 . 3.44)))))
  '(org-modules (quote (org-bbdb org-bibtex org-crypt org-docview org-gnus org-info org-jsinfo org-irc org-mew org-mhe org-rmail org-vm org-wl org-w3m org-drill)))
