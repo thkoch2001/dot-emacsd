@@ -24,8 +24,9 @@
 ; GPG key to use for encryption
 (setq org-crypt-key "042BA65A")
 
-(add-hook 'org-mode-hook
+; run this hook as late as possible to be run after org-crypt.el has been loaded by custom.el
+(add-hook 'window-setup-hook
   (lambda ()
     ; Encrypt all entries before saving
-    (org-crypt-use-before-save-magic))
+    'org-crypt-use-before-save-magic)
     'append)
