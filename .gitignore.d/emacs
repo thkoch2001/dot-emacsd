@@ -1,6 +1,8 @@
 *
 !.emacs.d
 !.emacs.d/*
+!.emacs.d/site-start.d/*
+!.emacs.d/local-lisp/*
 !.gitignore.d/emacs
 .emacs.d/auto-save
 .emacs.d/auto-save-list

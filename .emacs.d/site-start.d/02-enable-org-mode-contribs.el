@@ -1,0 +1,1 @@
+(setq load-path (cons "/usr/share/org-mode/lisp" load-path))

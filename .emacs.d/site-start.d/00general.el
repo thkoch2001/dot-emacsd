@@ -15,7 +15,9 @@
 (setq column-number-mode  t)
 
 ;; Line-wrapping
-(set-default 'fill-column 80)
+(set-default 'fill-column 78)
 
 ;; turn on things
 (show-paren-mode t)
+
+(debian-pkg-add-load-path-item (concat dotfiles-dir "local-lisp"))
