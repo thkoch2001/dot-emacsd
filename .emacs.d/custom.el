@@ -73,6 +73,7 @@ headsep=10mm, footskip=12mm}
  '(safe-local-variable-values (quote ((org-use-property-inheritance . t) (eval progn (flyspell-mode 1) (outline-minor-mode 1) (goto-address-mode 1) (hide-body)) (eval progn (flyspell-mode 1) (outline-minor-mode 1) (hide-body)) (eval flyspell-mode 1) (ispell-dictionary . "american") (eval hide-body))))
  '(show-trailing-whitespace t)
  '(user-mail-address "thomas@koch.ro")
+ '(vc-make-backup-files t)
  '(x-select-enable-clipboard t))
 (custom-set-faces
  ;; custom-set-faces was added by Custom.
