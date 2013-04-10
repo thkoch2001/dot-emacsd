@@ -3,3 +3,4 @@
 (let ((user-site-start-dir (concat dotfiles-dir "/site-start.d")))
     (debian-run-directories user-site-start-dir))
 (put 'dired-find-alternate-file 'disabled nil)
+(put 'narrow-to-region 'disabled nil)
