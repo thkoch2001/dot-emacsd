@@ -1,6 +1,7 @@
 *
 !.emacs.d
 !.emacs.d/*
+!.emacs.d/custom-themes/*
 !.emacs.d/site-start.d/*
 !.emacs.d/local-lisp/*
 !.gitignore.d/emacs

@@ -21,3 +21,4 @@
 (show-paren-mode t)
 
 (debian-pkg-add-load-path-item (concat dotfiles-dir "local-lisp"))
+(debian-pkg-add-load-path-item (concat dotfiles-dir "custom-themes"))
