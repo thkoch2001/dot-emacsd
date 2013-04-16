@@ -22,3 +22,7 @@
 
 (debian-pkg-add-load-path-item (concat dotfiles-dir "local-lisp"))
 (debian-pkg-add-load-path-item (concat dotfiles-dir "custom-themes"))
+
+;; require stuff
+(require 'dired+)
+(toggle-diredp-find-file-reuse-dir 1)
