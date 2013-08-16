@@ -86,6 +86,7 @@ headsep=10mm, footskip=12mm}
  '(user-mail-address "thomas@koch.ro")
  '(vc-make-backup-files t)
  '(version-control t)
+ '(visible-bell t)
  '(x-select-enable-clipboard t))
 (custom-set-faces
  ;; custom-set-faces was added by Custom.
