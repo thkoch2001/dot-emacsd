@@ -1,4 +1,6 @@
 ;; compare 02-backup-files.el
+
+(require 'cl)
 (let
   ( (auto-save-dir (concat dotfiles-dir "auto-save/"))
     (week (* 60 60 24 7))
@@ -7,14 +9,17 @@
 
   (setq auto-save-file-name-transforms `((".*" ,auto-save-dir t)))
 
- (cl-flet*
- ((file-last-modified (file)
-    (float-time (fifth (file-attributes file))))
+ (flet (
+   (file-last-modified (file) (
+     float-time (fifth (file-attributes file))
+   ))
 
-  (should-delete (file)
-    (> (- current (file-last-modified file)) week))
- )
-
+   (should-delete (file) (and
+      (> (- current (file-last-modified file)) week)
+      (file-regular-p file)
+     )
+   )
+  )
   (message "Deleting old save-list files...")
   (dolist (file (directory-files auto-save-dir t))
     (when (should-delete file)
@@ -28,6 +33,3 @@
       (delete-file file)
    ))
 ))
-
-
-
