@@ -72,7 +72,7 @@
 \\geometry{a4paper, top=25mm, left=35mm, right=25mm, bottom=30mm,
 headsep=10mm, footskip=12mm}
  " ("\\section{%s}" . "\\section*{%s}") ("\\subsection{%s}" . "\\subsection*{%s}") ("\\subsubsection{%s}" . "\\subsubsection*{%s}") ("\\paragraph{%s}" . "\\paragraph*{%s}") ("\\subparagraph{%s}" . "\\subparagraph*{%s}")))))
- '(org-modules (quote (org-bbdb org-bibtex org-crypt org-docview org-gnus org-info org-jsinfo org-irc org-mew org-mhe org-rmail org-vm org-wl org-w3m org-drill)))
+ '(org-modules (quote (org-bbdb org-bibtex org-crypt org-docview org-gnus org-info org-jsinfo org-irc org-mew org-mhe org-protocol org-rmail org-vm org-wl org-w3m org-drill)))
  '(org-special-ctrl-a/e t)
  '(org-special-ctrl-k t)
  '(require-final-newline nil)
