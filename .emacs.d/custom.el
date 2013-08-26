@@ -81,6 +81,7 @@ headsep=10mm, footskip=12mm}
  '(safe-local-variable-values (quote ((org-use-property-inheritance . t) (eval progn (flyspell-mode 1) (outline-minor-mode 1) (goto-address-mode 1) (hide-body)) (eval progn (flyspell-mode 1) (outline-minor-mode 1) (hide-body)) (eval flyspell-mode 1) (ispell-dictionary . "american") (eval hide-body))))
  '(show-trailing-whitespace t)
  '(speedbar-supported-extension-expressions (quote (".org" ".[ch]\\(\\+\\+\\|pp\\|c\\|h\\|xx\\)?" ".tex\\(i\\(nfo\\)?\\)?" ".el" ".emacs" ".l" ".lsp" ".p" ".java" ".js" ".f\\(90\\|77\\|or\\)?" ".ad[abs]" ".p[lm]" ".tcl" ".m" ".scm" ".pm" ".py" ".g" ".s?html" ".ma?k" "[Mm]akefile\\(\\.in\\)?" ".hs")))
+ '(tab-width 4)
  '(uniquify-buffer-name-style (quote reverse) nil (uniquify))
  '(user-mail-address "thomas@koch.ro")
  '(vc-make-backup-files t)
