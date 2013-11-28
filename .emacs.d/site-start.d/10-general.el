@@ -26,5 +26,10 @@
 
 (require 'uniquify)
 
+(defun sm (&optional b e) "run sm with the current region as input"
+  (interactive "r")
+  (shell-command-on-region b e "sm -")
+)
+
 ;; global keybindings
 (global-set-key (kbd "C-c g") 'magit-status)
