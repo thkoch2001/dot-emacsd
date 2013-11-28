@@ -25,3 +25,6 @@
 (toggle-diredp-find-file-reuse-dir 1)
 
 (require 'uniquify)
+
+;; global keybindings
+(global-set-key (kbd "C-c g") 'magit-status)
