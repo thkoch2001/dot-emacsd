@@ -19,6 +19,8 @@
 
 ;; turn on things
 (show-paren-mode t)
+(blink-cursor-mode t)
+
 
 ;; require stuff
 (require 'dired+)
