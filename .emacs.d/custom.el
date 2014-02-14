@@ -10,6 +10,8 @@
  '(TeX-view-program-selection (quote (((output-dvi style-pstricks) "dvips and gv") (output-dvi "xdvi") (output-pdf "Okular") (output-html "xdg-open"))))
  '(auto-revert-check-vc-info t)
  '(backup-by-copying t)
+ '(bookmark-default-file "~/.local/state/emacs/bookmarks")
+ '(bookmark-save-flag 1)
  '(calendar-week-start-day 1)
  '(color-theme-selection "Taming Mr Arneson" nil (color-theme_seldefcustom))
  '(custom-safe-themes (quote ("fc5fcb6f1f1c1bc01305694c59a1a861b008c534cae8d0e48e4d5e81ad718bc6" default)))
