@@ -15,6 +15,7 @@
  '(custom-safe-themes (quote ("fc5fcb6f1f1c1bc01305694c59a1a861b008c534cae8d0e48e4d5e81ad718bc6" default)))
  '(custom-theme-directory "~/.emacs.d/custom-themes")
  '(delete-old-versions t)
+ '(emmet-indentation 2)
  '(global-auto-revert-mode t)
  '(gnus-secondary-select-methods (quote ((nntp "news.digitalmars.com"))))
  '(gnus-use-trees nil)
