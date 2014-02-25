@@ -14,5 +14,6 @@ Including indent-buffer, which should not be called automatically on save."
   (interactive)
   (untabify-buffer)
   (delete-trailing-whitespace)
+  (set-buffer-file-coding-system 'undecided-unix t)
 ;;  (indent-buffer)
 )
