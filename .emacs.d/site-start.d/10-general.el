@@ -35,3 +35,5 @@
 
 ;; global keybindings
 (global-set-key (kbd "C-c g") 'magit-status)
+
+(require 'color-theme-solarized)
