@@ -14,6 +14,7 @@
  '(bookmark-save-flag 1)
  '(calendar-week-start-day 1)
  '(color-theme-selection "Solarized Dark")
+ '(custom-enabled-themes (quote (solarized-dark)))
  '(custom-safe-themes (quote ("fc5fcb6f1f1c1bc01305694c59a1a861b008c534cae8d0e48e4d5e81ad718bc6" default)))
  '(custom-theme-directory "~/.emacs.d/custom-themes")
  '(delete-old-versions t)
