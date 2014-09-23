@@ -36,4 +36,4 @@
 ;; global keybindings
 (global-set-key (kbd "C-c g") 'magit-status)
 
-(require 'color-theme-solarized)
+(add-to-list 'default-frame-alist '(font . "Terminus-12" ))
