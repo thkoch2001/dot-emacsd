@@ -96,6 +96,7 @@ headsep=10mm, footskip=12mm}
  '(org-modules (quote (org-bbdb org-bibtex org-crypt org-docview org-gnus org-info org-jsinfo org-irc org-mew org-mhe org-protocol org-rmail org-vm org-wl org-w3m org-drill)))
  '(org-special-ctrl-a/e t)
  '(org-special-ctrl-k t)
+ '(org-src-fontify-natively t)
  '(org-use-speed-commands t)
  '(require-final-newline nil)
  '(rfcview-index-location "/usr/share/doc/RFC/rfc-index.txt.gz")
