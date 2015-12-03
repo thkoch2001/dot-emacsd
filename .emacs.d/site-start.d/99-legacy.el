@@ -6,3 +6,6 @@
 ;reftex
 (setq reftex-plug-into-AUCTeX t)
 (add-hook 'LaTeX-mode-hook 'turn-on-reftex)   ; with AUCTeX LaTeX mode
+
+; don't know why it doesn't work to set this via customize
+(load-theme 'solarized-dark t)
