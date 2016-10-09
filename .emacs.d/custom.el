@@ -14,6 +14,13 @@
  '(bookmark-save-flag 1)
  '(calendar-week-start-day 1)
  '(delete-old-versions t)
+ '(display-time-world-list
+   (quote
+    (("Europe/Berlin" "Berlin")
+     ("America/New_York" "New York")
+     ("America/Los_Angeles" "San Francisco")
+     ("Europe/Bucharest" "Bucarest")
+     ("Asia/Tokyo" "Tokyo"))))
  '(emmet-indentation 2)
  '(flymake-no-changes-timeout 600)
  '(flymake-start-syntax-check-on-newline nil)
@@ -93,6 +100,7 @@ headsep=10mm, footskip=12mm}
  '(org-special-ctrl-k t)
  '(org-src-fontify-natively t)
  '(org-use-speed-commands t)
+ '(package-check-signature t)
  '(require-final-newline nil)
  '(rfcview-index-location "/usr/share/doc/RFC/rfc-index.txt.gz")
  '(rfcview-rfc-location-pattern (quote ("/usr/share/doc/RFC/links/rfc%s.txt.gz" "/usr/share/doc/RFC/links/rfc%s.txt")))
