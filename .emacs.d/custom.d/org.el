@@ -7,6 +7,7 @@
  '(org-babel-load-languages (quote ((emacs-lisp . t) (sh . t) (python . t) (sql . t))))
  '(org-clock-continuously t)
  '(org-clock-persist t)
+ '(org-clock-persist-file "~/.local/state/emacs/org-clock-save.el")
  '(org-modules
    (quote
     (org-bbdb org-bibtex org-crypt org-docview org-gnus org-info org-jsinfo org-irc org-mew org-mhe org-protocol org-rmail org-vm org-wl org-w3m org-drill)))
