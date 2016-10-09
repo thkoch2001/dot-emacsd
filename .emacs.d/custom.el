@@ -4,6 +4,10 @@
  ;; Your init file should contain only one such instance.
  ;; If there is more than one, they won't work right.
  '(auto-revert-check-vc-info t)
+ '(auto-save-file-name-transforms
+   (quote
+    ((".*" "~/.local/state/emacs.d/auto-save/" t))))
+ '(auto-save-list-file-prefix "~/.local/state/emacs/auto-save-list/.saves-")
  '(backup-by-copying t)
  '(bookmark-default-file "~/.local/state/emacs/bookmarks")
  '(bookmark-save-flag 1)
@@ -71,6 +75,7 @@
    (quote
     (".org" ".[ch]\\(\\+\\+\\|pp\\|c\\|h\\|xx\\)?" ".tex\\(i\\(nfo\\)?\\)?" ".el" ".emacs" ".l" ".lsp" ".p" ".java" ".js" ".f\\(90\\|77\\|or\\)?" ".ad[abs]" ".p[lm]" ".tcl" ".m" ".scm" ".pm" ".py" ".g" ".s?html" ".ma?k" "[Mm]akefile\\(\\.in\\)?" ".hs")))
  '(tab-width 4)
+ '(tramp-persistency-file-name "~/.local/state/emacs/tramp-connection-history")
  '(uniquify-buffer-name-style (quote reverse) nil (uniquify))
  '(user-mail-address "thomas@koch.ro")
  '(vc-make-backup-files t)
