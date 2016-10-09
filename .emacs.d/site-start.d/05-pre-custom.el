@@ -1,6 +1,6 @@
 (let (
   (dirs-to-create '(
-    "~/.local/state/emacs/ido"
+    "~/.local/state/emacs"
     "~/org"
     ))
   )
