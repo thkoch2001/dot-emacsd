@@ -1,6 +1,6 @@
 (let (
   (dirs-to-create '(
-    "~/.local/state/emacs"
+    "~/.local/state/emacs/auto-save"
     "~/org"
     ))
   )
