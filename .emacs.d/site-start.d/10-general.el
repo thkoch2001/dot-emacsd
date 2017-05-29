@@ -31,6 +31,6 @@
 )
 
 ;; global keybindings
-(global-set-key (kbd "C-c g") 'magit-status)
+(global-set-key (kbd "C-x g") 'magit-status)
 
 (add-to-list 'default-frame-alist '(font . "Terminus-12" ))
