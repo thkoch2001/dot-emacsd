@@ -151,7 +151,13 @@ headsep=10mm, footskip=12mm}
  '(org-special-ctrl-k t)
  '(org-src-fontify-natively t)
  '(org-use-speed-commands t)
- '(package-check-signature t)
+ '(package-archives
+   (quote
+    (("gnu" . "http://elpa.gnu.org/packages/")
+     ("melpa-stable" . "https://stable.melpa.org/packages/"))))
+ '(package-check-signature (quote allow-unsigned))
+ '(package-selected-packages (quote (logview)))
+ '(package-unsigned-archives (quote ("https://stable.melpa.org/packages/")))
  '(require-final-newline nil)
  '(rfcview-index-location "/usr/share/doc/RFC/rfc-index.txt.gz")
  '(rfcview-rfc-location-pattern
