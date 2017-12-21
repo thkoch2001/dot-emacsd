@@ -158,6 +158,7 @@ headsep=10mm, footskip=12mm}
  '(package-check-signature (quote allow-unsigned))
  '(package-selected-packages (quote (logview)))
  '(package-unsigned-archives (quote ("https://stable.melpa.org/packages/")))
+ '(projectile-global-mode t)
  '(require-final-newline nil)
  '(rfcview-index-location "/usr/share/doc/RFC/rfc-index.txt.gz")
  '(rfcview-rfc-location-pattern
