@@ -8,7 +8,6 @@
 (setq dotfiles-dir (file-name-directory (or load-file-name (buffer-file-name))))
 
 (debian-pkg-add-load-path-item (concat dotfiles-dir "local-lisp"))
-(debian-pkg-add-load-path-item (concat dotfiles-dir "custom-themes"))
 
 (setq custom-file (concat dotfiles-dir "custom.el"))
 (load custom-file)
