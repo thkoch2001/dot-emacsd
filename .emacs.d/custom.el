@@ -46,8 +46,8 @@
  '(haskell-process-log t)
  '(haskell-process-suggest-remove-import-lines t)
  '(haskell-process-type (quote stack-ghci))
- '(haskell-stylish-on-save t)
- '(haskell-tags-on-save t)
+ '(haskell-stylish-on-save nil)
+ '(haskell-tags-on-save nil)
  '(ido-enable-flex-matching t)
  '(ido-everywhere t)
  '(ido-mode (quote both) nil (ido))
@@ -77,8 +77,7 @@
  '(kept-new-versions 6)
  '(ledger-binary-path "hledger")
  '(lpr-command "xpp")
- '(org-agenda-files (quote ("~/org")))
- '(org-babel-load-languages (quote ((emacs-lisp . t) (sh . t) (python . t) (sql . t))))
+ '(org-agenda-files (quote ("~/org")) t)
  '(org-clock-continuously t)
  '(org-clock-persist t)
  '(org-clock-persist-file "~/.local/state/emacs/org-clock-save.el")
@@ -198,7 +197,9 @@ headsep=10mm, footskip=12mm}
  '(web-mode-enable-comment-keywords (quote ("TODO" "FIXME")))
  '(web-mode-script-padding 2)
  '(web-mode-style-padding 2)
- '(web-mode-tag-auto-close-style 2))
+ '(web-mode-tag-auto-close-style 2)
+ '(woman-fill-column 100)
+ '(woman-fill-frame nil))
 (custom-set-faces
  ;; custom-set-faces was added by Custom.
  ;; If you edit it by hand, you could mess it up, so be careful.
