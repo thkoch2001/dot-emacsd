@@ -1,14 +1,14 @@
 ;;; logview.el --- Major mode for viewing log files  -*- lexical-binding: t -*-
 
-;; Copyright (C) 2015-2017 Paul Pogonyshev
+;; Copyright (C) 2015-2018 Paul Pogonyshev
 
 ;; Author:     Paul Pogonyshev <pogonyshev@gmail.com>
 ;; Maintainer: Paul Pogonyshev <pogonyshev@gmail.com>
-;; Version:    0.8.2
-;; Package-Version: 0.8.2
+;; Version:    0.12
+;; Package-Version: 0.12
 ;; Keywords:   files, tools
 ;; Homepage:   https://github.com/doublep/logview
-;; Package-Requires: ((emacs "24.1") (datetime "0.3"))
+;; Package-Requires: ((emacs "24.4") (datetime "0.6.1") (extmap "1.0"))
 
 ;; This program is free software; you can redistribute it and/or
 ;; modify it under the terms of the GNU General Public License as
@@ -36,8 +36,25 @@
 
 ;;; Code:
 
-(eval-when-compile (require 'cl-lib))
+;; Internally, we cannot use the point for most purposes, since correct interpretation of
+;; `logview-entry' text property value heavily depends on knowing *exact* entry beginning.
+;; When moving point, Emacs always adjusts it so it doesn't fall inside an invisible
+;; range, which screws things up for us.  In the same vein, we always operate on
+;; temporarily widened buffer, because it is not even possible to query text properties
+;; outside of narrowed-to region.
+;;
+;; While the above sounds like potential problems only for the case someone hides half of
+;; an entry or narrows from the middle of an entry, it really isn't.  I have experienced
+;; bugs even in normal testing with entries fully hidden or shown only.
+;;
+;; In short, use point (e.g. `goto-char') only when delivering results of internal
+;; computations to the user.
+
+
+(eval-when-compile (require 'cl-lib)
+                   (require 'help-mode))
 (require 'datetime)
+(require 'extmap)
 
 ;; We _append_ self to the list of mode rules so as to not clobber
 ;; other rules, as '.log' is a common file extension.  This also gives
@@ -116,6 +133,13 @@ This value is used as the fallback for customizable
     (with-current-buffer buffer
       (when (and (eq major-mode 'logview-mode) (not (logview-initialized-p)))
         (logview--guess-submode)))))
+
+(defun logview--set-highlight-affecting-variable (variable value)
+  (set variable value)
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (and (eq major-mode 'logview-mode) (with-no-warnings logview--highlighted-view-name))
+        (logview--refontify-buffer)))))
 
 (defvar logview--additional-submodes-type
   (let* ((italicize      (lambda (string) (propertize string 'face 'italic)))
@@ -219,8 +243,8 @@ looks like this:
         Error levels:        ERROR
         Warning levels:      WARN
         Information levels:  INFO
-        Trace levels:        TRACE
         Debug levels:        DEBUG
+        Trace levels:        TRACE
 
 This is not a coincidence, as the mode is primarily targeted at
 SLF4J log files.
@@ -231,8 +255,8 @@ complicated:
         Error levels:        SEVERE
         Warning levels:      WARNING
         Information levels:  INFO
-        Trace levels:        CONFIG, FINE
-        Debug levels:        FINER, FINEST
+        Debug levels:        CONFIG, FINE
+        Trace levels:        FINER, FINEST
 
 JUL has seven severity levels and we need to map them to five the
 mode supports.  So the last two lists contain two levels each.
@@ -304,7 +328,7 @@ parsed, highlighted and all currently active filters are applied
 to it.
 
 To temporarily activate or deactivate Auto-Revert (Tail) mode in
-a Logview buffer type \\<logview-mode-map>\\[auto-revert-mode] or \\<logview-mode-map>\\[auto-revert-tail-mode]."
+a Logview buffer type `\\<logview-mode-map>\\[auto-revert-mode]' or `\\<logview-mode-map>\\[auto-revert-tail-mode]'."
   :group 'logview
   :type  '(choice (const :tag "Off"                   nil)
                   (const :tag "Auto-Revert mode"      auto-revert-mode)
@@ -321,12 +345,20 @@ will refuse to complete operation unless this check succeeds."
   :type  'integer)
 
 
+(defcustom logview-target-gap-length 60
+  "Default target gap length for `\\<logview-mode-map>\\[logview-next-timestamp-gap]' and similar commands.
+
+This must be a non-negative number of seconds.  Can be changed
+temporarily for a single buffer with `\\<logview-mode-map>\\[logview-change-target-gap-length]'."
+  :group 'logview
+  :type  'number)
+
 (defcustom logview-copy-visible-text-only t
   "Whether to copy, kill, etc. only visible selected text.
 Standard Emacs behavior is to copy even invisible text, but that
 typically doesn't make much sense with filtering.
 
-To temporarily change this on per-buffer basis type \\<logview-mode-map>\\[logview-toggle-copy-visible-text-only]."
+To temporarily change this on per-buffer basis type `\\<logview-mode-map>\\[logview-toggle-copy-visible-text-only]'."
   :group 'logview
   :type  'boolean)
 
@@ -336,19 +368,46 @@ Normally search is not restricted and matches can be found
 anywhere.  However, it is sometimes useful to ignore other parts
 of log entries, e.g. timestamp when searching for numbers.
 
-To temporarily change this on per-buffer basis type \\<logview-mode-map>\\[logview-toggle-search-only-in-messages]."
+To temporarily change this on per-buffer basis type `\\<logview-mode-map>\\[logview-toggle-search-only-in-messages]'."
   :group 'logview
   :type  'boolean)
 
 (defcustom logview-show-ellipses t
   "Whether to show ellipses to indicate hidden log entries.
 
-To temporarily change this on per-buffer basis type \\<logview-mode-map>\\[logview-toggle-show-ellipses]."
+To temporarily change this on per-buffer basis type `\\<logview-mode-map>\\[logview-toggle-show-ellipses]'."
   :group 'logview
   :type  'boolean)
 
+(defcustom logview-highlighted-entry-part 'whole
+  "Which parts of an entry get highlighted with `\\<logview-mode-map>\\[logview-highlight-view-entries]'."
+  :group 'logview
+  :type  '(choice (const :tag "The whole entry"                  whole)
+                  (const :tag "Entry header (date, level, etc.)" header)
+                  (const :tag "Entry message"                    message))
+  :set   'logview--set-highlight-affecting-variable)
+
+
+(defcustom logview-pulse-entries '(navigation-view timestamp-gap)
+  "When to briefly highlight the current entry.
+You can also pulse the current entry unconditionally with `\\<logview-mode-map>\\[logview-pulse-current-entry]' command."
+  :group 'logview
+  :type  '(set :inline t
+               (const :tag "After navigating a view with `\\<logview-mode-map>\\[logview-next-navigation-view-entry]' or `\\<logview-mode-map>\\[logview-previous-navigation-view-entry]'" navigation-view)
+               (const :tag "After navigating within the current entry with `\\<logview-mode-map>\\[logview-go-to-message-beginning]'" message-beginning)
+               (const :tag "After finding large gaps in entry timestamps (`\\<logview-mode-map>\\[logview-next-timestamp-gap]' and similar)" timestamp-gap)
+               (const :tag "After other entry movement commands" movement)))
+
 (defcustom logview-views-file (locate-user-emacs-file "logview.views")
   "Simple text file in which defined views are stored."
+  :group 'logview
+  :type  'file)
+
+(defcustom logview-cache-filename (locate-user-emacs-file "logview-cache.extmap")
+  "Internal non-human-readable cache.
+Customizable in case you want to put it somewhere else.  This
+file can be safely deleted, but will be recreated by Logview next
+time you use the mode.  Used to make startup faster."
   :group 'logview
   :type  'file)
 
@@ -442,6 +501,26 @@ To temporarily change this on per-buffer basis type \\<logview-mode-map>\\[logvi
   "Face to use for logger thread."
   :group 'logview-faces)
 
+(defface logview-highlight
+  '((((background dark))
+     :background "#8030e0")
+    (t
+     :background "#f8d0ff"))
+  "Face to highlight entries of a view chosen with `\\<logview-mode-map>\\[logview-highlight-view-entries]'.
+Variable `logview-highlighted-entry-part' controls how exactly
+this face is applied."
+  :group 'logview-faces)
+
+(defface logview-pulse
+  '((((background dark))
+     :background "#606000")
+    (t
+     :background "#c0c0ff"))
+  "Face to briefly highlight entries to draw attention.
+Variable `logview-pulse-entries' controls in which situations
+this face is used."
+  :group 'logview-faces)
+
 (defface logview-edit-filters-type-prefix
   '((((background dark))
      :background "#604000"
@@ -456,6 +535,7 @@ To temporarily change this on per-buffer basis type \\<logview-mode-map>\\[logvi
 
 ;;; Internal variables and constants.
 
+;; Keep in sync with `logview--entry-*' and `logview--find-region-entries'.
 (defconst logview--timestamp-group 1)
 (defconst logview--level-group     2)
 (defconst logview--name-group      3)
@@ -463,7 +543,8 @@ To temporarily change this on per-buffer basis type \\<logview-mode-map>\\[logvi
 (defconst logview--ignored-group   5)
 (defconst logview--message-group   6)
 
-(defconst logview--final-levels '(error warning information debug trace))
+(defconst logview--final-levels '(error warning information debug trace)
+  "List of final (submode-independent) levels, most to least severe.")
 
 (defconst logview--entry-part-regexp (rx bow (or (group "TIMESTAMP")
                                                  (group "LEVEL")
@@ -474,50 +555,61 @@ To temporarily change this on per-buffer basis type \\<logview-mode-map>\\[logvi
                                          eow))
 (defconst logview--timestamp-entry-part-regexp (rx bow "TIMESTAMP" eow))
 
-(defvar logview--datetime-options '(:second-fractional-extension t
-                                    :only-4-digit-years t
-                                    :accept-leading-space t
-                                    :require-leading-zeros t
-                                    :forbid-unnecessary-zeros t))
+(defvar logview--datetime-matching-options '(:second-fractional-extension t
+                                             :only-4-digit-years t
+                                             :accept-leading-space t
+                                             :require-leading-zeros t
+                                             :forbid-unnecessary-zeros t))
+
+(defvar logview--datetime-parsing-options  '(:second-fractional-extension t
+                                             :case-insensitive t
+                                             :lax-whitespace t))
 
 (defvar logview--all-timestamp-formats-cache nil)
 
-(defconst logview--valid-text-filter-prefixes '("a+" "a-" "t+" "t-" "m+" "m-"))
-(defconst logview--valid-filter-prefixes      (append '("lv" "LV") logview--valid-text-filter-prefixes))
+(defconst logview--valid-filter-prefixes '("lv" "LV" "a+" "a-" "t+" "t-" "m+" "m-"))
 
+
+(defvar-local logview--point-min nil)
+(defvar-local logview--point-max nil)
 
 (defvar-local logview--submode-name nil)
 (defvar-local logview--entry-regexp nil)
 (defvar-local logview--submode-features nil)
 
-(defvar-local logview--submode-level-alist nil
-  "Submode levels mapped to final levels.
-Levels are ordered least to most important.")
-
 (defvar-local logview--submode-level-data nil
-  "An alist of level string to the following vectors:
-0: level invisibility symbol (for quick filtering);
-1: level invisibility symbol when filtered (for quick filtering).
-2: level entry face;
-3: level string face;
-4: result of `logview--hide-entry-callback' with item 1;
-5: result of `logview--show-entry-callback' with item 1.")
+  "An alist of level strings to (INDEX . (ENTRY-FACE . STRING-FACE)).")
 
-(defvar-local logview--min-shown-level        nil)
-(defvar-local logview--min-always-shown-level nil)
-(defvar-local logview--as-important-levels    nil)
-(defvar-local logview--hide-all-details       nil)
+(defvar-local logview--submode-level-faces nil
+  "A vector of (ENTRY-FACE . STRING-FACE).")
+
+(defvar-local logview--submode-timestamp-parser           nil)
+(defvar-local logview--timestamp-difference-format-string nil)
+(defvar-local logview--timestamp-gap-format-string        nil)
+
+(defvar-local logview--as-important-level nil)
+(defvar-local logview--hide-all-details   nil)
+
+(defvar-local logview--timestamp-difference-base nil
+  "Either nil or (POSITION . TIMESTAMP-AS-FLOAT).")
+(defvar-local logview--timestamp-difference-per-thread-bases nil
+  "Either nil or a hash-table of strings to cons cells.")
+
+(defvar-local logview--buffer-target-gap-length nil)
+(defvar-local logview--last-found-large-gap     nil)
 
 (defvar-local logview--current-filter-text "")
+(defvar-local logview--current-filter      nil)
 
-;; Currently a list of three items: matching function, inclusion and
-;; exclusion regexps.
-(defvar-local logview--name-filter    nil)
-(defvar-local logview--thread-filter  nil)
-(defvar-local logview--message-filter nil)
-
-(defvar logview--empty-filter-id '((nil nil) (nil nil) (nil nil)))
-(defvar-local logview--applied-filter-id logview--empty-filter-id)
+;; I also considered using private cons cells where we could reset `car' e.g. from
+;; `logview-filtered' to nil.  However, this is very shaky and will stop working if any
+;; minor mode tweaks `invisible' property the "wrong" way.  Another possibility would be
+;; to use uninterned symbols, but that would be very confusing, since in the output they
+;; would look the same.  Therefore, I decided to include "generation" in the symbol
+;; instead.
+(defvar-local logview--filtered-symbol       'logview-filtered/0)
+(defvar-local logview--hidden-entry-symbol   'logview-hidden-entry/0)
+(defvar-local logview--hidden-details-symbol 'logview-hidden-details/0)
 
 (defvar logview--submode-name-history     nil)
 (defvar logview--timestamp-format-history nil)
@@ -533,8 +625,16 @@ Levels are ordered least to most important.")
 
 (defvar logview--view-name-history)
 
+(defvar-local logview--navigation-view-name  nil)
+(defvar-local logview--highlighted-view-name nil)
+(defvar-local logview--highlighted-filter    nil)
+
 (defvar-local logview--filter-editing-buffer nil)
 (defvar logview--view-editing-buffer         nil)
+
+;; Not too small to avoid calling `logview--fontify-region' and
+;; `logview--find-region-entries' often: calling and setup involves some overhead.
+(defvar logview--lazy-region-size 50000)
 
 
 (defvar-local logview-filter-edit--parent-buffer             nil)
@@ -559,6 +659,9 @@ Levels are ordered least to most important.")
      (logview-go-to-message-beginning                                        "Beginning of entry’s message")
      (logview-next-entry                 logview-previous-entry              "Next / previous entry")
      (logview-next-as-important-entry    logview-previous-as-important-entry "Next / previous ‘as important’ entry")
+     (logview-next-navigation-view-entry logview-previous-navigation-view-entry "Next / previous entry in the navigation view (see below)")
+     (logview-next-timestamp-gap         logview-previous-timestamp-gap      "Next / previous large gap in entry timestamps")
+     (logview-next-timestamp-gap-in-this-thread logview-next-timestamp-gap-in-this-thread "Same, but only within this thread")
      (logview-first-entry                logview-last-entry                  "First / last entry")
      "‘As important’ means entries with the same or higher level.")
     ("Narrowing and widening"
@@ -592,6 +695,9 @@ Levels are ordered least to most important.")
      (logview-reset-all-filters-restrictions-and-hidings                     "Reset filters, widen and show explicitly hidden entries"))
     ("Views"
      (logview-switch-to-view                                                 "Switch to a view")
+     (logview-set-navigation-view                                            "Choose a view for navigation")
+     (logview-highlight-view-entries                                         "Select a view to highlight its entries")
+     (logview-unhighlight-view-entries                                       "Remove view highlighting")
      (logview-save-filters-as-view-for-submode                               "Save the filters as a view for the current submode")
      (logview-save-filters-as-global-view                                    "Save the filters as a globally available view")
      (logview-edit-submode-views                                             "Edit views for the current submode")
@@ -601,13 +707,22 @@ Levels are ordered least to most important.")
      (logview-hide-entry                                                     "Hide entry")
      (logview-hide-region-entries                                            "Hide entries in the region")
      (logview-show-entries                                                   "Show some explicitly hidden entries")
-     (logview-show-region-entries                                            "Show explicitly hidden entries in the region"))
+     (logview-show-region-entries                                            "Show explicitly hidden entries in the region")
+     (logview-reset-manual-entry-hiding                                      "Show all explicitly hidden entries in the buffer"))
     ("Hide or show details of individual entries"
      (logview-toggle-entry-details                                           "Toggle details of the current entry")
      (logview-toggle-region-entry-details                                    "Toggle details of entries in the region")
      (logview-toggle-details-globally                                        "Toggle details in the whole buffer")
+     (logview-reset-manual-details-hiding                                    "Show all hidden entry details in the buffer")
      "Here ‘details’ are the message lines after the first.")
+    ("Display timestamp differences"
+     (logview-difference-to-current-entry                                    "Show difference to the current entry for all other entries")
+     (logview-thread-difference-to-current-entry                             "Show difference only for the entries of the same thread")
+     (logview-go-to-difference-base-entry                                    "Go to the entry difference to which timestamp is shown")
+     (logview-forget-difference-base-entries                                 "Don’t show timestamp differences")
+     (logview-forget-thread-difference-base-entry                            "Don’t show timestamp differences for this thread"))
     ("Change options for current buffer"
+     (logview-change-target-gap-length                                       "Set gap length for ‘\\[logview-next-timestamp-gap]’ and similar commands")
      (auto-revert-mode                                                       "Toggle Auto-Revert mode")
      (auto-revert-tail-mode                                                  "Toggle Auto-Revert Tail mode")
      (logview-toggle-copy-visible-text-only                                  "Toggle ‘copy only visible text’")
@@ -615,6 +730,7 @@ Levels are ordered least to most important.")
      (logview-toggle-show-ellipses                                           "Toggle ‘show ellipses’")
      "Options can be customized globally or changed in each buffer.")
     ("Miscellaneous"
+     (logview-pulse-current-entry                                            "Briefly highlight the current entry")
      (logview-choose-submode                                                 "Manually choose appropriate submode")
      (logview-customize-submode-options                                      "Customize options that affect submode selection")
      (bury-buffer                                                            "Bury buffer")
@@ -630,20 +746,95 @@ Levels are ordered least to most important.")
 ;; Lisp is sensitive to declaration order, so these are collected at
 ;; the beginnig of the file.
 
-(defmacro logview--std-matching (&rest body)
-  (declare (indent 0) (debug t))
-  `(save-excursion
-     (let ((case-fold-search nil))
-       ,@body)))
-
-(defmacro logview--std-matching-and-altering (&rest body)
+(defmacro logview--std-altering (&rest body)
   (declare (indent 0) (debug t))
   `(save-excursion
      (let ((logview--process-buffer-changes nil)
-           (case-fold-search                nil)
            (inhibit-read-only               t))
        (with-silent-modifications
          ,@body))))
+
+(defmacro logview--std-temporarily-widening (&rest body)
+  (declare (indent 0) (debug t))
+  `(save-restriction
+     (let ((logview--point-min (logview--point-min))
+           (logview--point-max (logview--point-max)))
+       (widen)
+       ,@body)))
+
+(defmacro logview--locate-current-entry (entry start &rest body)
+  (declare (indent 2) (debug (symbolp symbolp body)))
+  (cond ((and entry start)
+         (let ((entry+start (make-symbol "$entry+start")))
+           `(let* ((,entry+start (logview--do-locate-current-entry))
+                   (,entry       (car ,entry+start))
+                   (,start       (cdr ,entry+start)))
+              ,@body)))
+        (entry
+         `(let ((,entry (car (logview--do-locate-current-entry))))
+            ,@body))
+        (start
+         `(let ((,start (cdr (logview--do-locate-current-entry))))
+            ,@body))
+        (t
+         `(progn (logview--do-locate-current-entry)
+                 ,@body))))
+
+
+(defsubst logview--point-min ()
+  (or logview--point-min (point-min)))
+
+(defsubst logview--point-max ()
+  (or logview--point-max (point-max)))
+
+(defsubst logview--widen ()
+  (setq logview--point-min (point-min)
+        logview--point-max (point-max)))
+
+
+;; Value of text property `logview-entry' is a vector with the following elements:
+;; - 0:   entry end offset, i.e. total entry length;
+;; - 1:   message start offset, i.e. entry header length;
+;; - 2-9: group 1-4 (timestamp, level, name, thread) begin/end offsets;
+;; - 10:  details (second line) start offset, or nil if there is no second line;
+;; - 11:  entry level as a number;
+;; - 12:  entry timestamp as a float (or nil, if not parsed yet).
+;;
+;; Offsets are relative to the entry beginning.  We store offsets so that values remain
+;; valid even if buffer text is shifted forwards or backwards.
+;;
+;; For all the following functions, ENTRY must be a value of `logview-entry' property.
+(defsubst logview--entry-end (entry start)
+  (+ start (aref entry 0)))
+
+(defsubst logview--entry-message-start (entry start)
+  (+ start (aref entry 1)))
+
+(defsubst logview--entry-message (entry start)
+  (buffer-substring-no-properties (logview--entry-message-start entry start) (logview--entry-end entry start)))
+
+(defsubst logview--entry-group-start (entry start group)
+  (+ start (aref entry (* group 2))))
+
+(defsubst logview--entry-group-end (entry start group)
+  (+ start (aref entry (1+ (* group 2)))))
+
+(defsubst logview--entry-group (entry start group)
+  (let ((base (* group 2)))
+    (buffer-substring-no-properties (+ start (aref entry base)) (+ start (aref entry (1+ base))))))
+
+(defsubst logview--entry-details-start (entry start)
+  (let ((details-offset (aref entry 10)))
+    (when details-offset
+      (+ start details-offset))))
+
+(defsubst logview--entry-level (entry)
+  (aref entry 11))
+
+;; Parse entry timestamp.  This value is cached.
+(defsubst logview--entry-timestamp (entry start)
+  (or (aref entry 12)
+      (aset entry 12 (funcall logview--submode-timestamp-parser (logview--entry-group entry start logview--timestamp-group)))))
 
 
 ;; The following (inlined) functions are needed when applying
@@ -653,7 +844,7 @@ Levels are ordered least to most important.")
 ;; that _preceeds_ the entry, otherwise ellipses show at line
 ;; beginnings, which is ugly and shifts actual buffer text.
 
-(defsubst logview--linefeed-back-checked (position)
+(defsubst logview--character-back-checked (position)
   "Return end of previous line.
 This function assumes POSITION is at the beginning of a line.  If
 this is the first line, don't change POSITION."
@@ -661,11 +852,16 @@ this is the first line, don't change POSITION."
       (1- position)
     1))
 
-(defsubst logview--linefeed-back (position)
+(defsubst logview--character-back (position)
   "Return end of previous line assumin non-first line.
 This function assumes POSITION is at the beginning of a line and
 that the line is not the first in the buffer."
   (1- position))
+
+(defsubst logview--space-back (position)
+  (if (eq (get-char-code-property (char-before position) 'general-category) 'Zs)
+      (1- position)
+    position))
 
 
 
@@ -680,6 +876,8 @@ that the line is not the first in the buffer."
                        ("p"   logview-previous-entry)
                        ("N"   logview-next-as-important-entry)
                        ("P"   logview-previous-as-important-entry)
+                       ("M-n" logview-next-navigation-view-entry)
+                       ("M-p" logview-previous-navigation-view-entry)
                        ("<"   logview-first-entry)
                        (">"   logview-last-entry)
                        ;; Narrowing/widening commands.
@@ -728,6 +926,9 @@ that the line is not the first in the buffer."
                        ("r e" logview-reset-all-filters-restrictions-and-hidings)
                        ;; View commands.
                        ("v"   logview-switch-to-view)
+                       ("V n" logview-set-navigation-view)
+                       ("V h" logview-highlight-view-entries)
+                       ("V u" logview-unhighlight-view-entries)
                        ("V s" logview-save-filters-as-view-for-submode)
                        ("V S" logview-save-filters-as-global-view)
                        ("V e" logview-edit-submode-views)
@@ -738,22 +939,37 @@ that the line is not the first in the buffer."
                        ("H"   logview-hide-region-entries)
                        ("s"   logview-show-entries)
                        ("S"   logview-show-region-entries)
+                       ("r h" logview-reset-manual-entry-hiding)
                        ;; Showing/hiding entry details commands.
                        ("d"   logview-toggle-entry-details)
                        ("D"   logview-toggle-region-entry-details)
                        ("e"   logview-toggle-details-globally)
+                       ("r d" logview-reset-manual-details-hiding)
+                       ;; Entry timestamp commands.
+                       ("z a" logview-difference-to-current-entry)
+                       ("z t" logview-thread-difference-to-current-entry)
+                       ("z z" logview-go-to-difference-base-entry)
+                       ("z A" logview-forget-difference-base-entries)
+                       ("z T" logview-forget-thread-difference-base-entry)
+                       ("z n" logview-next-timestamp-gap)
+                       ("z p" logview-previous-timestamp-gap)
+                       ("z N" logview-next-timestamp-gap-in-this-thread)
+                       ("z P" logview-previous-timestamp-gap-in-this-thread)
+                       ("z g" logview-change-target-gap-length)
                        ;; Option changing commands.
                        ("o r" auto-revert-mode)
                        ("o t" auto-revert-tail-mode)
                        ("o v" logview-toggle-copy-visible-text-only)
                        ("o m" logview-toggle-search-only-in-messages)
                        ("o e" logview-toggle-show-ellipses)
+                       ("o g" logview-change-target-gap-length)
                        ("o s" logview-choose-submode)
                        ("o S" logview-customize-submode-options)
                        ;; For compatibility with the inactive keymap.
                        ("C-c C-c" logview-choose-submode)
                        ("C-c C-s" logview-customize-submode-options)
                        ;; Miscellaneous commands.
+                       ("SPC" logview-pulse-current-entry)
                        ("?"   logview-mode-help)
                        ("g"   logview-refresh-buffer-as-needed)
                        ("x"   logview-append-log-file-tail)
@@ -781,10 +997,13 @@ successfully.")
 (define-derived-mode logview-mode nil "Logview"
   "Major mode for viewing and filtering various log files."
   (logview--update-keymap)
-  (add-hook 'read-only-mode-hook 'logview--update-keymap nil t)
-  (set (make-local-variable 'filter-buffer-substring-function) 'logview--buffer-substring-filter)
-  (set (make-local-variable 'isearch-filter-predicate)         'logview--isearch-filter-predicate)
-  (add-hook 'change-major-mode-hook 'logview--exiting-mode nil t)
+  (add-hook 'read-only-mode-hook #'logview--update-keymap nil t)
+  (setq font-lock-defaults '(nil))
+  (set (make-local-variable 'font-lock-fontify-region-function) #'logview--fontify-region)
+  (set (make-local-variable 'filter-buffer-substring-function)  #'logview--buffer-substring-filter)
+  (set (make-local-variable 'isearch-filter-predicate)          #'logview--isearch-filter-predicate)
+  (add-hook 'after-change-functions #'logview--invalidate-region-entries nil t)
+  (add-hook 'change-major-mode-hook #'logview--exiting-mode nil t)
   (logview--guess-submode)
   (logview--update-invisibility-spec)
   (unless (logview-initialized-p)
@@ -796,11 +1015,9 @@ successfully.")
                    logview-mode-inactive-map)))
 
 (defun logview--exiting-mode ()
-  ;; Remove custom invisibility property values, as otherwise other
-  ;; modes will show empty buffers.  Also remove face property, as we
-  ;; set it ourselves, not through font-lock.
-  (logview--std-matching-and-altering
-    (remove-text-properties 1 (1+ (buffer-size)) '(face nil invisible nil))))
+  (logview--std-temporarily-widening
+    (logview--std-altering
+      (remove-list-of-text-properties (point-min) (point-max) '(invisible display logview-entry)))))
 
 (defun logview-initialized-p ()
   (not (null logview--entry-regexp)))
@@ -814,18 +1031,23 @@ successfully.")
 
 With prefix argument, additionally put mark at the end of the
 message, which is especially useful for multiline messages.  In
-Transient Mark mode also activate the region."
+Transient Mark mode also activate the region.
+
+If current entry's timestamp is replaced with its difference to
+some base (see e.g.  `logview-difference-to-current-entry'), this
+command additionally shows the real timestamp in the echo area."
   (interactive "P")
   (logview--assert)
-  (let ((case-fold-search nil))
-    (when (logview--match-current-entry)
-      (goto-char (match-end 0))
+  (logview--std-temporarily-widening
+    (logview--locate-current-entry entry start
+      (goto-char (logview--entry-message-start entry start))
       (when select-message
-        (save-excursion
-          (push-mark (logview--linefeed-back (if (equal (logview--match-successive-entries 1) 0)
-                                                 (match-beginning 0)
-                                               (point-max)))
-                     t t))))))
+        (push-mark (logview--character-back (logview--entry-end entry start)) t t))
+      (when (and (memq 'timestamp logview--submode-features)
+                 (get-text-property (logview--entry-group-start entry start logview--timestamp-group) 'display))
+        (message "Timestamp here: %s" (logview--entry-group entry start logview--timestamp-group))))
+    (unless (and select-message transient-mark-mode)
+      (logview--maybe-pulse-current-entry 'message-beginning))))
 
 (defun logview-next-entry (&optional n)
   "Move point vertically down N (1 by default) log entries.
@@ -836,11 +1058,11 @@ equal to `next-line'.  However, if messages span several lines,
 the function will have significantly different effect."
   (interactive "p")
   (logview--assert)
-  (when (/= n 0)
-    (let ((case-fold-search nil)
-          (original-point   (point))
-          (remaining        (logview--match-successive-entries n t)))
-      (goto-char (if remaining (match-end 0) original-point))
+  (unless n
+    (setq n 1))
+  (logview--std-temporarily-widening
+    (let ((remaining (logview--forward-entry n nil)))
+      (logview--maybe-pulse-current-entry 'movement)
       (logview--maybe-complain-about-movement n remaining))))
 
 (defun logview-previous-entry (&optional n)
@@ -868,24 +1090,16 @@ Point is positioned at the beginning of the message of the
 resulting entry."
   (interactive "p")
   (logview--assert 'level)
-  (when (/= n 0)
-    (let ((case-fold-search nil)
-          (original-point   (point)))
+  (unless n
+    (setq n 1))
+  (logview--std-temporarily-widening
+    (logview--locate-current-entry entry nil
       (unless (memq last-command '(logview-next-as-important-entry logview-previous-as-important-entry))
-        (setq logview--as-important-levels nil)
-        (logview--match-current-entry)
-        (let ((this-level (match-string logview--level-group))
-              (found))
-          (dolist (level-pair logview--submode-level-alist)
-            (unless found
-              (setq found (equal (car level-pair) this-level)))
-            (when found
-              (push (car level-pair) logview--as-important-levels)))))
-      (let ((remaining (logview--match-successive-entries
-                        n t (lambda ()
-                              (member (match-string logview--level-group) logview--as-important-levels)))))
-        (goto-char (if remaining (match-end 0) original-point))
-        (logview--maybe-complain-about-movement n remaining t)))))
+        (setq logview--as-important-level (logview--entry-level entry))))
+    (let* ((level     (or logview--as-important-level most-positive-fixnum))
+           (remaining (logview--forward-entry n (lambda (entry _start) (<= (logview--entry-level entry) level)))))
+      (logview--maybe-pulse-current-entry 'movement)
+      (logview--maybe-complain-about-movement n remaining 'as-important))))
 
 (defun logview-previous-as-important-entry (&optional n)
   "Move point vertically up N 'as important' entries.
@@ -898,19 +1112,49 @@ resulting entry."
   (interactive "p")
   (logview-next-as-important-entry (if n (- n) -1)))
 
+(defun logview-next-navigation-view-entry (&optional n set-view-if-needed)
+  "Move point vertically down N entries in the navigation view.
+Entries that don't conform to the navigation view filters, as
+well as hidden due to any reasons, are skipped over.
+
+When called interactively and there is no navigation view yet (or
+it got deleted or renamed), ask for the view first.  You can use
+command `\\<logview-mode-map>\\[logview-set-navigation-view]' to change that later."
+  ;; Second "p" is only needed so that SET-VIEW-IF-NEEDED is non-nil when called
+  ;; interactively.
+  (interactive "p\np")
+  (logview--assert)
+  (when set-view-if-needed
+    (unless (logview--find-view logview--navigation-view-name t)
+      (setq logview--navigation-view-name
+            (logview--choose-view (substitute-command-keys
+                                   "Navigate through view (change with `\\[logview-set-navigation-view]'): ")))))
+  (unless n
+    (setq n 1))
+  (logview--std-temporarily-widening
+    (let* ((filters   (plist-get (logview--find-view logview--navigation-view-name) :filters))
+           (remaining (logview--forward-entry n (cdr (logview--do-parse-filters filters)))))
+      (logview--maybe-pulse-current-entry 'navigation-view)
+      (logview--maybe-complain-about-movement n remaining logview--navigation-view-name))))
+
+(defun logview-previous-navigation-view-entry (&optional n set-view-if-needed)
+  "Move point vertically up N entries in the navigation view.
+Entries that don't conform to the navigation view filters, as
+well as hidden due to any reasons, are skipped over.
+
+When called interactively and there is no navigation view yet (or
+it got deleted or renamed), ask for the view first.  You can use
+command `\\<logview-mode-map>\\[logview-set-navigation-view]' to change that later."
+  (interactive "p\np")
+  (logview-next-navigation-view-entry (if n (- n) -1) set-view-if-needed))
+
 (defun logview-first-entry ()
   "Move point to the first log entry.
 
 Point is positioned at the beginning of the message of the entry.
 Otherwise this function is similar to `beginning-of-buffer'."
   (interactive)
-  (logview--assert)
-  (unless (region-active-p)
-    (push-mark))
-  (goto-char (point-min))
-  (let ((case-fold-search nil))
-    (when (logview--match-current-entry)
-      (goto-char (match-end 0)))))
+  (logview--do-relocate #'logview--point-min))
 
 (defun logview-last-entry ()
   "Move point to the last log entry.
@@ -919,13 +1163,17 @@ Point is positioned at the beginning of the message of the entry.
 If the last entry is multiline, this makes the function quite
 different from `end-of-buffer'."
   (interactive)
+  (logview--do-relocate #'logview--point-max))
+
+(defun logview--do-relocate (where-provider)
   (logview--assert)
   (unless (region-active-p)
     (push-mark))
-  (goto-char (point-max))
-  (let ((case-fold-search nil))
-    (when (logview--match-current-entry)
-      (goto-char (match-end 0)))))
+  (logview--std-temporarily-widening
+    (goto-char (funcall where-provider))
+    (logview--locate-current-entry entry start
+      (goto-char (logview--entry-message-start entry start)))
+    (logview--maybe-pulse-current-entry 'movement)))
 
 
 
@@ -958,13 +1206,16 @@ prefix means zero."
   (let ((from (point-min))
         (to   (point-max)))
     (widen)
-    (logview--std-matching
-      (narrow-to-region (if (and upwards (equal (logview--match-successive-entries (if n (- n) 0) t) 0))
-                            (match-beginning 0)
-                          from)
-                        (if (and (not upwards) (equal (logview--match-successive-entries (if n (1+ n) 1) t) 0))
-                            (match-beginning 0)
-                          to)))))
+    (narrow-to-region (if upwards
+                          (progn (logview--forward-entry (if n (- n) 0))
+                                 (logview--locate-current-entry nil start
+                                   (max start from)))
+                        from)
+                      (if upwards
+                          to
+                        (logview--forward-entry (or n 0))
+                        (logview--locate-current-entry entry start
+                          (min (logview--entry-end entry start) to))))))
 
 (defun logview-widen-upwards ()
   "Widen the buffer only upwards, i.e. keep the bottom restriction."
@@ -1021,9 +1272,9 @@ warning, all entries other than warnings and errors will be
 hidden."
   (interactive)
   (logview--assert 'level)
-  (logview--std-matching
-    (when (logview--match-current-entry)
-      (logview--change-min-level-filter (match-string logview--level-group)))))
+  (logview--std-temporarily-widening
+    (logview--locate-current-entry entry nil
+      (logview--change-min-level-filter (car (nth (- (length logview--submode-level-data) 1 (logview--entry-level entry)) logview--submode-level-data))))))
 
 (defun logview-always-show-errors ()
   "Always show error entries."
@@ -1057,15 +1308,15 @@ match the current text filters."
 (defun logview--find-min-level (final-level)
   "Find minimal submode level that maps to given FINAL-LEVEL or higher."
   (logview--assert 'level)
-  (let ((result)
-        (final-level-index (cl-position final-level logview--final-levels)))
-    (dolist (level-pair logview--submode-level-alist)
-      (when (and (null result) (<= (cl-position (cdr level-pair) logview--final-levels :test 'equal) final-level-index))
-        (setq result (car level-pair))))
-    result))
+  (let ((lower-level-faces (mapcar (lambda (final-level) (intern (format "logview-%s-entry" (symbol-name final-level))))
+                                   (cdr (memq final-level logview--final-levels)))))
+    (catch 'level
+      (dolist (level-data logview--submode-level-data)
+        (unless (memq (cadr (cdr level-data)) lower-level-faces)
+          (throw 'level (car level-data)))))))
 
 (defun logview--change-min-level-filter (min-level &optional always-show)
-  (when (and min-level (string= min-level (caar logview--submode-level-alist)))
+  (when (and min-level (string= min-level (caar logview--submode-level-data)))
     (setq min-level nil))
   (let ((case-fold-search nil)
         (filter-prefix    (if always-show "LV" "lv")))
@@ -1083,12 +1334,6 @@ match the current text filters."
                                                    filter-prefix " " min-level "\n"
                                                    (substring logview--current-filter-text level-filter-at))))))
   (logview--parse-filters))
-
-(defun logview--set-min-level (min-level min-always-shown-level)
-  (unless (and (equal logview--min-shown-level min-level) (equal logview--min-always-shown-level min-always-shown-level))
-    (setq logview--min-shown-level        min-level
-          logview--min-always-shown-level min-always-shown-level)
-    (logview--update-invisibility-spec)))
 
 
 
@@ -1161,10 +1406,11 @@ that doesn't match any of entered expression."
 (defun logview--prompt-for-new-filter (prompt type filter-line-prefix)
   (logview--assert type)
   (let* ((default-value (unless (eq type 'message)
-                          (logview--std-matching
-                            (when (logview--match-current-entry)
-                              (let ((base (regexp-quote (match-string (cdr (assq type (list (cons 'name   logview--name-group)
-                                                                                            (cons 'thread logview--thread-group))))))))
+                          (logview--std-temporarily-widening
+                            (logview--locate-current-entry entry start
+                              (let ((base (regexp-quote (logview--entry-group entry start (pcase-exhaustive type
+                                                                                            (`name   logview--name-group)
+                                                                                            (`thread logview--thread-group))))))
                                 (list base (format "^%s$" base)))))))
          (regexp        (read-regexp prompt default-value (cdr (assq type '((name    . logview--name-regexp-history)
                                                                             (thread  . logview--thread-regexp-history)
@@ -1178,8 +1424,7 @@ that doesn't match any of entered expression."
                                                           (not (string-suffix-p "\n" logview--current-filter-text)))
                                                  "\n")
                                                filter-line-prefix " " (replace-regexp-in-string "\n" "\n.. " regexp) "\n"))
-    (logview--parse-filters)
-    (logview--apply-parsed-filters)))
+    (logview--parse-filters)))
 
 ;; This must have been a standard function.
 (defun logview--valid-regexp-p (regexp)
@@ -1204,22 +1449,19 @@ level to show entries regardless of text filters."
   "Reset all name filters."
   (interactive)
   (logview--assert 'name)
-  (logview--parse-filters '("a+" "a-"))
-  (logview--apply-parsed-filters))
+  (logview--parse-filters '("a+" "a-")))
 
 (defun logview-reset-thread-filters ()
   "Reset all thread filters."
   (interactive)
   (logview--assert 'thread)
-  (logview--parse-filters '("t+" "t-"))
-  (logview--apply-parsed-filters))
+  (logview--parse-filters '("t+" "t-")))
 
 (defun logview-reset-message-filters ()
   "Reset all message filters."
   (interactive)
   (logview--assert)
-  (logview--parse-filters '("m+" "m-"))
-  (logview--apply-parsed-filters))
+  (logview--parse-filters '("m+" "m-")))
 
 (defun logview-reset-all-filters ()
   "Reset all filters (level, name, thread).
@@ -1240,13 +1482,11 @@ entries and cancel any narrowing restrictions."
   (logview--assert)
   (when also-show-details
     (setq logview--hide-all-details nil))
-  (if (memq 'level logview--submode-features)
-      (logview-reset-level-filters)
-    (when also-show-details
-      (logview--update-invisibility-spec)))
-  (when (or (memq 'name logview--submode-features) (memq 'thread logview--submode-features) also-cancel-explicit-hiding)
-    (logview--parse-filters logview--valid-text-filter-prefixes)
-    (logview--apply-parsed-filters also-cancel-explicit-hiding)))
+  (when also-cancel-explicit-hiding
+    (logview--retire-hiding-symbol 'logview--hidden-entry-symbol)
+    (logview--retire-hiding-symbol 'logview--hidden-details-symbol))
+  (unless (logview--parse-filters logview--valid-filter-prefixes)
+    (logview--update-invisibility-spec)))
 
 
 
@@ -1255,10 +1495,29 @@ entries and cancel any narrowing restrictions."
 (defun logview-switch-to-view (view)
   "Switch to a previously defined view.
 Interactively, read the view name from the minibuffer."
-  (interactive (logview--choose-view "Switch to view: "))
-  (setq logview--current-filter-text (plist-get view :filters))
-  (logview--parse-filters)
-  (logview--apply-parsed-filters))
+  (interactive (list (logview--choose-view "Switch to view: ")))
+  (setq logview--current-filter-text (plist-get (logview--find-view view) :filters))
+  (logview--parse-filters))
+
+(defun logview-set-navigation-view (view)
+  "Set a view to be used for navigation.
+Interactively, read the view name from the minibuffer.
+
+Navigation view filters are not active in the normal sense, but
+you can use `\\<logview-mode-map>\\[logview-next-navigation-view-entry]' and `\\<logview-mode-map>\\[logview-previous-navigation-view-entry]' keys to move across its entries."
+  (interactive (list (logview--choose-view "Navigate through view: ")))
+  (setq logview--navigation-view-name (plist-get (logview--find-view view) :name)))
+
+(defun logview-highlight-view-entries (view)
+  "Set a view to be used for entry highlighting.
+Interactively, read the view name from the minibuffer."
+  (interactive (list (logview--choose-view "Highlight entries of a view: ")))
+  (logview--do-highlight-view-entries (plist-get (logview--find-view view) :name)))
+
+(defun logview-unhighlight-view-entries ()
+  (interactive)
+  (setq logview--highlighted-view-name nil)
+  (logview--do-highlight-view-entries nil))
 
 (defun logview-save-filters-as-view-for-submode (name)
   "Save the current filter set as a view for the current submode.
@@ -1287,9 +1546,10 @@ minibuffer."
 (defun logview-delete-view (view)
   "Delete a view definition.
 Interactively, read the view name from the minibuffer."
-  (interactive (logview--choose-view "Delete view: "))
-  (setq logview--views             (delq view (logview--views))
+  (interactive (list (logview--choose-view "Delete view: ")))
+  (setq logview--views             (delq (logview--find-view view) (logview--views))
         logview--views-need-saving t)
+  (logview--after-updating-view-definitions)
   (logview--update-mode-name))
 
 (defun logview--choose-view (prompt)
@@ -1299,22 +1559,13 @@ Interactively, read the view name from the minibuffer."
         (push (plist-get view :name) defined-names)))
     (unless defined-names
       (user-error "There are no views defined for the current submode"))
-    (let ((name      (logview--completing-read prompt defined-names nil t nil 'logview--view-name-history))
-          (all-views (logview--views))
-          view)
-      (while all-views
-        (let ((candidate (pop all-views)))
-          (when (and (string= (plist-get candidate :name) name)
-                     (or (null (plist-get candidate :submode)) (string= (plist-get candidate :submode) logview--submode-name)))
-            (setq view      candidate
-                  all-views nil))))
-      (list view))))
+    (logview--completing-read prompt defined-names nil t nil 'logview--view-name-history)))
 
 (defun logview--do-save-filters-as-view (name global)
-  (unless (or logview--min-shown-level (car logview--name-filter) (car logview--thread-filter) (car logview--message-filter))
+  (unless (car logview--current-filter)
     (user-error "There are currently no filters"))
   (unless name
-    (setq name (read-string "Name: " nil 'logview--view-name-history)))
+    (setq name (read-string "Save as: " nil 'logview--view-name-history)))
   (when (= (length name) 0)
     (user-error "View name may not be empty"))
   (let ((matches (lambda (view)
@@ -1336,6 +1587,7 @@ Interactively, read the view name from the minibuffer."
         (plist-put (car new-views) :submode logview--submode-name))
       (setq logview--views             (nreverse new-views)
             logview--views-need-saving t)
+      (logview--after-updating-view-definitions)
       (logview--update-mode-name)
       (message (if global "Saved filters as a global view named `%s'" "Saved filters as a submode view named `%s'") name))))
 
@@ -1367,7 +1619,7 @@ Interactively, read the view name from the minibuffer."
 
 ;;; Explicit entry hiding/showing commands.
 
-(defun logview-hide-entry (&optional n)
+(defun logview-hide-entry (&optional n interactive)
   "Explicitly hide N currently visible entries starting at point.
 If N is negative, hide -N previous entries instead, not including
 the current.
@@ -1377,15 +1629,18 @@ is invoked without prefix argument, hide all entries in the
 region instead (i.e. just like `logview-hide-region-entries')."
   (interactive (list (if (or current-prefix-arg (not (use-region-p)))
                          (prefix-numeric-value current-prefix-arg)
-                       'use-region)))
+                       'use-region)
+                     t))
   (if (eq n 'use-region)
-      (logview-hide-region-entries (point) (mark))
+      (logview-hide-region-entries (point) (mark) interactive)
     (logview--assert)
-    (logview--std-matching-and-altering
-      (logview--maybe-complain-about-movement
-       n (logview--iterate-successive-entries n (logview--hide-entry-callback 'logview-hidden-entry) t) 0))))
+    (unless n
+      (setq n 1))
+    (logview--std-temporarily-widening
+      (logview--std-altering
+        (logview--maybe-complain-about-movement n (logview--iterate-successive-entries (point) n #'logview--hide-entry-callback t))))))
 
-(defun logview-hide-region-entries (begin end)
+(defun logview-hide-region-entries (begin end &optional interactive)
   "Explicitly hide all log entries in the region.
 Entries that are in the region only partially are hidden as well.
 
@@ -1393,12 +1648,15 @@ Note that this includes entries that are currently hidden due to
 filtering too.  If you later cancel filtering, all entries in the
 region will remain hidden until you also cancel the explicit
 hiding."
-  (interactive "r")
+  (interactive "r\np")
   (logview--assert)
-  (logview--std-matching-and-altering
-    (logview--iterate-entries-in-region begin end (logview--hide-entry-callback 'logview-hidden-entry))))
+  (logview--std-temporarily-widening
+    (logview--std-altering
+      (logview--iterate-entries-in-region begin end #'logview--hide-entry-callback)
+      (when interactive
+        (setq deactivate-mark t)))))
 
-(defun logview-show-entries (&optional n)
+(defun logview-show-entries (&optional n interactive)
   "Show explicitly hidden entries.
 By default, explicitly hidden entries between the current and the
 next visible are shown.  If invoked with prefix argument, entries
@@ -1413,43 +1671,64 @@ entries in the region instead (i.e. work just like
                          (prefix-numeric-value current-prefix-arg)
                        'use-region)))
   (if (eq n 'use-region)
-      (logview-show-region-entries (point) (mark))
+      (logview-show-region-entries (point) (mark) interactive)
     (logview--assert)
-    ;; Much like 'logview--iterate-successive-entries', but because of
-    ;; peculiar semantics, not broken out into its own function.
-    (when (/= n 0)
-      (logview--std-matching-and-altering
-        (let ((direction (cl-signum n))
-              (shower    (logview--show-entry-callback 'logview-hidden-entry)))
-          (funcall (if (< n 0)
-                       'logview--iterate-entries-backward
-                     ;; To "not count" the current entry.
-                     (setq n (1+ n))
-                     'logview--iterate-entries-forward)
-                   (lambda (begin after-first-line entry-end)
-                     (if (invisible-p begin)
-                         (progn
-                           (funcall shower begin after-first-line entry-end)
-                           t)
-                       (/= (setq n (- n direction)) 0)))))))
-    (logview--maybe-complain-about-movement n n)))
+    (unless n
+      (setq n 1))
+    (logview--std-temporarily-widening
+      (logview--std-altering
+        ;; Much like 'logview--iterate-successive-entries', but because of
+        ;; peculiar semantics, not broken out into its own function.
+        (when (/= n 0)
+          (let ((direction (cl-signum n)))
+            (funcall (if (> n 0) #'logview--iterate-entries-forward #'logview--iterate-entries-backward)
+                     (point)
+                     (lambda (entry entry-at)
+                       (if (invisible-p entry-at)
+                           (progn (logview--show-entry-callback entry entry-at)
+                                  t)
+                         (/= (setq n (- n direction)) 0)))
+                     nil nil t))
+          (logview--maybe-complain-about-movement n n))))))
 
-(defun logview-show-region-entries (begin end)
+(defun logview-show-region-entries (begin end &optional interactive)
   "Explicitly show all log entries in the region.
 
 Note that entries that are currently hidden due to filtering are
 also marked as 'not explicitly hidden'.  However, you will see
 any effect only once you clear or alter the responsible filters."
-  (interactive "r")
+  (interactive "r\np")
   (logview--assert)
-  (logview--std-matching-and-altering
-    (logview--iterate-entries-in-region begin end (logview--show-entry-callback 'logview-hidden-entry))))
+  (logview--std-temporarily-widening
+    (logview--std-altering
+      (logview--iterate-entries-in-region begin end #'logview--show-entry-callback)
+      (when interactive
+        (setq deactivate-mark t)))))
+
+(defun logview-reset-manual-entry-hiding ()
+  "Show all manually hidden entries in the buffer.
+
+Entries currently not visible due to filtering are also cleared
+of 'manually hidden' mark.  However, such entries will remain
+invisible until filters are removed or changed appropriately."
+  (interactive)
+  (logview--assert)
+  (logview--retire-hiding-symbol 'logview--hidden-entry-symbol)
+  (logview--update-invisibility-spec))
+
+(defun logview--hide-entry-callback (entry start)
+  (logview--update-entry-invisibility start (logview--entry-details-start entry start) (logview--entry-end entry start)
+                                      'propagate t 'propagate))
+
+(defun logview--show-entry-callback (entry start)
+  (logview--update-entry-invisibility start (logview--entry-details-start entry start) (logview--entry-end entry start)
+                                      'propagate nil 'propagate))
 
 
 
 ;;; Showing/hiding entry details commands.
 
-(defun logview-toggle-entry-details (&optional arg)
+(defun logview-toggle-entry-details (&optional arg interactive)
   "Toggle whether details for current entry are shown.
 If invoked with prefix argument, show them if the argument is
 positive, hide otherwise.
@@ -1459,75 +1738,250 @@ In Transient Mark mode, if the region is active, call
 for how toggling works."
   (interactive (list (if (use-region-p)
                          (list (or current-prefix-arg 'toggle))
-                       (or current-prefix-arg 'toggle))))
+                       (or current-prefix-arg 'toggle))
+                     t))
   (if (consp arg)
-      (logview-toggle-region-entry-details (point) (mark) (car arg))
-    (save-excursion
-      (save-restriction
-        (widen)
-        (logview--std-matching-and-altering
-          (when (logview--match-current-entry)
-            (forward-line)
-            (let ((after-first-line (point))
-                  (end              (progn (backward-char)
-                                           (if (logview--match-successive-entries 1)
-                                               (match-beginning 0)
-                                             (point-max)))))
-              (if (<= end after-first-line)
-                  (user-error "Current entry has no details")
-                (logview--change-entry-details-visibility after-first-line end
-                                                          (if (eq arg 'toggle)
-                                                              (memq 'logview-hidden-details
-                                                                    (get-text-property (logview--linefeed-back after-first-line) 'invisible))
-                                                            (> (prefix-numeric-value arg) 0)))))))))))
+      (logview-toggle-region-entry-details (point) (mark) (car arg) interactive)
+    (logview--std-temporarily-widening
+      (logview--std-altering
+        (logview--locate-current-entry entry start
+          (let ((details-start (logview--entry-details-start entry start)))
+            (unless details-start
+              (user-error "Current entry has no details"))
+            (logview--update-entry-invisibility start details-start (logview--entry-end entry start)
+                                                'propagate 'propagate (if (eq arg 'toggle)
+                                                                          (not (memq logview--hidden-details-symbol (get-text-property details-start 'invisible)))
+                                                                        (> (prefix-numeric-value arg) 0)))))))))
 
-(defun logview-toggle-region-entry-details (begin end &optional arg)
+(defun logview-toggle-region-entry-details (begin end &optional arg interactive)
   "Toggle whether details in the region are shown.
 Toggling works like this: if at least one entry in the region has
-details that are visible, all are hidden.  Otherwise, if all are
-already hidden, they are shown.  If invoked with prefix argument,
-show details if the argument is positive, hide otherwise.
+visible details, all are hidden.  Otherwise, if all are already
+hidden, they are shown.  If invoked with prefix argument, show
+details if the argument is positive, hide otherwise.
 
 Entries that are in the region only partially are operated on as
 well."
-  (interactive (list (point) (mark) (or current-prefix-arg 'toggle)))
-  (save-excursion
-    (save-restriction
-      (widen)
-      (logview--std-matching-and-altering
-        (when (eq arg 'toggle)
-          (setq arg 1)
-          (logview--iterate-entries-in-region begin end (lambda (_begin after-first-line end)
-                                                          (if (or (>= after-first-line end)
-                                                                  (memq 'logview-hidden-details (get-text-property after-first-line 'invisible)))
+  (interactive (list (point) (mark) (or current-prefix-arg 'toggle) t))
+  (logview--std-temporarily-widening
+    (logview--std-altering
+      (when (eq arg 'toggle)
+        (setq arg 1)
+        (logview--iterate-entries-in-region begin end (lambda (entry start)
+                                                        (let ((details-start (logview--entry-details-start entry start)))
+                                                          (if (or (null details-start)
+                                                                  (memq logview--hidden-details-symbol (get-text-property details-start 'invisible)))
                                                               t
                                                             (setq arg 0)
-                                                            nil))))
-        (let ((show (> (prefix-numeric-value arg) 0)))
-          (logview--iterate-entries-in-region begin end (lambda (_begin after-first-line end)
-                                                          (logview--change-entry-details-visibility after-first-line end show)
-                                                          t)))))))
-
-(defun logview--change-entry-details-visibility (after-first-line end show)
-  (let* ((current-invisible (get-text-property (logview--linefeed-back after-first-line) 'invisible))
-         (new-invisible     current-invisible))
-    (if show
-        (setq new-invisible (remq 'logview-hidden-details new-invisible))
-      (unless (memq 'logview-hidden-details new-invisible)
-        (push 'logview-hidden-details new-invisible)))
-    (unless (eq new-invisible current-invisible)
-      (put-text-property (logview--linefeed-back after-first-line) (logview--linefeed-back end) 'invisible new-invisible))))
-
+                                                            nil)))))
+      (let ((hide (<= (prefix-numeric-value arg) 0)))
+        (logview--iterate-entries-in-region begin end (lambda (entry start)
+                                                        (logview--update-entry-invisibility start (logview--entry-details-start entry start) (logview--entry-end entry start)
+                                                                                            'propagate 'propagate hide))))
+      (when interactive
+        (setq deactivate-mark t)))))
 
 (defun logview-toggle-details-globally (&optional arg)
   "Toggle whether details are shown in the whole buffer.
 If invoked with prefix argument, show details if the argument is
-positive, hide otherwise."
+positive, hide otherwise.
+
+Note that this is separate from manual detail hiding with `\\<logview-mode-map>\\[logview-toggle-entry-details]' and
+`\\<logview-mode-map>\\[logview-toggle-region-entry-details]'.  Global detail hiding takes precedence: when it is active,
+all details are hidden in the buffer.  However, when it becomes
+inactive (e.g. after toggling two times), only those details
+which haven't been manually hidden are visible."
   (interactive (list (or current-prefix-arg 'toggle)))
   (logview--toggle-option-locally 'logview--hide-all-details arg (called-interactively-p 'interactive)
                                   "All entry messages details are now hidden"
                                   "Details of entry messages are now visible unless hidden explicitly")
   (logview--update-invisibility-spec))
+
+(defun logview-reset-manual-details-hiding ()
+  "Show all manually hidden entry details in the buffer."
+  (interactive)
+  (logview--assert)
+  (logview--retire-hiding-symbol 'logview--hidden-details-symbol)
+  (logview--toggle-option-locally 'logview--hide-all-details 0)
+  (logview--update-invisibility-spec))
+
+
+
+
+(defun logview-difference-to-current-entry ()
+  "Display difference to current entry's timestamp.
+Difference is shown for all other entries.  Any thread-specific
+difference bases (appointed with `\\<logview-mode-map>\\[logview-thread-difference-to-current-entry]') are removed."
+  (interactive)
+  (logview--assert 'timestamp)
+  (logview--std-temporarily-widening
+    (logview--locate-current-entry entry start
+      (unless (and (equal (cdr logview--timestamp-difference-base) start) (null logview--timestamp-difference-per-thread-bases))
+        (setq logview--timestamp-difference-base             (cons entry start)
+              logview--timestamp-difference-per-thread-bases nil)
+        (logview--refontify-buffer)))))
+
+(defun logview-thread-difference-to-current-entry ()
+  "Display difference to current entry's timestamp in its thread.
+In case there is a global difference base (appointed with `\\<logview-mode-map>\\[logview-difference-to-current-entry]'),
+it stays in effect for other threads."
+  (interactive)
+  (logview--assert 'timestamp 'thread)
+  (logview--std-temporarily-widening
+    (logview--locate-current-entry entry start
+      (let ((thread (logview--entry-group entry start logview--thread-group)))
+        (unless (and logview--timestamp-difference-per-thread-bases (equal (cdr (gethash thread logview--timestamp-difference-per-thread-bases)) start))
+          (unless logview--timestamp-difference-per-thread-bases
+            (setq logview--timestamp-difference-per-thread-bases (make-hash-table :test #'equal)))
+          (puthash thread (cons entry start) logview--timestamp-difference-per-thread-bases)
+          (logview--refontify-buffer))))))
+
+(defun logview-go-to-difference-base-entry ()
+  (interactive)
+  (logview--assert 'timestamp)
+  (logview--std-temporarily-widening
+    (logview--locate-current-entry entry start
+      (let* ((thread          (logview--entry-group entry start logview--thread-group))
+             (difference-base (or (when logview--timestamp-difference-per-thread-bases
+                                    (gethash thread logview--timestamp-difference-per-thread-bases))
+                                  logview--timestamp-difference-base)))
+        (unless difference-base
+          (user-error "There is no timestamp difference base for the current entry"))
+        (when (invisible-p difference-base)
+          (user-error "Timestamp difference base for the current entry is currently hidden"))
+        (let* ((entry (car difference-base))
+               (start (cdr difference-base)))
+          (unless (and (< start (logview--point-max)) (> (logview--entry-end entry start) (logview--point-min)))
+            (user-error "Difference base entry is outside the narrowing region"))
+          (goto-char (logview--entry-message-start entry start))
+          (logview--maybe-pulse-current-entry 'movement))))))
+
+(defun logview-forget-difference-base-entries ()
+  (interactive)
+  (logview--assert 'timestamp)
+  (unless (and (null logview--timestamp-difference-base) (null logview--timestamp-difference-per-thread-bases))
+    (setq logview--timestamp-difference-base             nil
+          logview--timestamp-difference-per-thread-bases nil)
+    (logview--refontify-buffer)))
+
+(defun logview-forget-thread-difference-base-entry ()
+  (interactive)
+  (logview--assert 'timestamp 'thread)
+  (logview--std-temporarily-widening
+    (logview--locate-current-entry entry start
+      (let* ((thread          (logview--entry-group entry start logview--thread-group))
+             (difference-base (when logview--timestamp-difference-per-thread-bases
+                                (gethash thread logview--timestamp-difference-per-thread-bases))))
+        (unless difference-base
+          (user-error "There is no thread-specific timestamp difference base for thread `%s'" thread))
+        (remhash thread logview--timestamp-difference-per-thread-bases)
+        (logview--refontify-buffer)))))
+
+
+
+
+(defun logview-next-timestamp-gap (&optional n)
+  "Move to the next large gap in entry timestamps.
+If N is specified, use that as a gap count.  Filtered out entries
+are ignored.
+
+Point is positioned at the beginning of the message of the first
+entry after the gap.  If there is a large enough gap just after
+the current entry and N is one, this command just moves one entry
+down."
+  (interactive "p")
+  (logview--do-next-timestamp-gap n nil))
+
+(defun logview-previous-timestamp-gap (&optional n)
+  "Move to the previous large gap in entry timestamps.
+If N is specified, use that as a gap count.  Filtered out entries
+are ignored.
+
+Point is positioned at the beginning of the message of the first
+entry after the gap."
+  (interactive "p")
+  (logview--do-next-timestamp-gap (if n (- n) -1) nil))
+
+(defun logview-next-timestamp-gap-in-this-thread (&optional n)
+  "Move to the next large gap in thread's entry timestamps.
+If N is specified, use that as a gap count.  Only consider
+entries within this thread that are not filtered out.
+
+Point is positioned at the beginning of the message of the first
+entry after the gap."
+  (interactive "p")
+  (logview--do-next-timestamp-gap n t))
+
+(defun logview-previous-timestamp-gap-in-this-thread (&optional n)
+  "Move to the previous large gap in thread's entry timestamps.
+If N is specified, use that as a gap count.  Only consider
+entries within this thread that are not filtered out.
+
+Point is positioned at the beginning of the message of the first
+entry after the gap."
+  (interactive "p")
+  (logview--do-next-timestamp-gap (if n (- n) -1) t))
+
+(defun logview--do-next-timestamp-gap (n same-thread-only)
+  (logview--assert 'timestamp)
+  (when same-thread-only
+    (logview--assert 'thread))
+  (unless n
+    (setq n 1))
+  (logview--locate-current-entry started-at-entry started-at
+    (let ((thread (when same-thread-only
+                    (logview--entry-group started-at-entry started-at logview--thread-group))))
+      (when (< n 0)
+        (logview--forward-entry -1 (when thread
+                                     (lambda (entry start)
+                                       (string-equal (logview--entry-group entry start logview--thread-group) thread)))))
+      (logview--std-temporarily-widening
+        (logview--locate-current-entry entry start
+          (let ((remaining (logview--forward-entry n (logview--entry-timestamp-gap-validator entry start thread)))
+                (success   (when logview--last-found-large-gap
+                             (format "Gap to the previous entry%s is %s s"
+                                     (if same-thread-only " of this thread" "")
+                                     (format logview--timestamp-gap-format-string logview--last-found-large-gap))))
+                (failure   (format "No more large enough (%s s or more) gaps in timestamps%s"
+                                   (logview--target-gap-length) (if same-thread-only " in this thread" ""))))
+            (when (< n 0)
+              (if (= remaining n)
+                  (goto-char (logview--entry-message-start started-at-entry started-at))
+                (logview--forward-entry 1)))
+            (logview--maybe-pulse-current-entry 'timestamp-gap)
+            (cond ((= n 0))
+                  ((= remaining n)
+                   (user-error "%s" failure))
+                  ((= remaining 0)
+                   (message "%s" success))
+                  (t
+                   (user-error "%s; %s" success (downcase failure))))))))))
+
+(defun logview-change-target-gap-length (length)
+  (interactive (list (if current-prefix-arg
+                         (prefix-numeric-value current-prefix-arg)
+                       (string-to-number (read-from-minibuffer (format "Search for gap this long (currently %s s): " (logview--target-gap-length)))))))
+  (if (and (numberp length) (>= length 0))
+      (setq logview--buffer-target-gap-length (when (/= length 0) length))
+    (user-error "Expected a non-negative positive number")))
+
+(defun logview--entry-timestamp-gap-validator (entry start thread)
+  (let ((timestamp  (logview--entry-timestamp entry start))
+        (target-gap (logview--target-gap-length)))
+    (lambda (entry start)
+      (when (or (null thread) (string-equal (logview--entry-group entry start logview--thread-group) thread))
+        (let* ((new-timestamp (logview--entry-timestamp entry start))
+               (gap           (abs (- new-timestamp timestamp))))
+          (setq timestamp new-timestamp)
+          (when (>= gap target-gap)
+            (setq logview--last-found-large-gap gap)))))))
+
+(defun logview--target-gap-length ()
+  (let ((target-gap (or logview--buffer-target-gap-length logview-target-gap-length)))
+    (if (and (numberp target-gap) (> target-gap 0))
+        target-gap
+      ;; Might want to issue a user error instead.
+      60)))
 
 
 
@@ -1627,6 +2081,12 @@ These are:
 
 ;;; Miscellaneous commands.
 
+(defun logview-pulse-current-entry ()
+  (interactive)
+  (logview--assert)
+  (logview--std-temporarily-widening
+    (logview--maybe-pulse-current-entry)))
+
 (defun logview-mode-help ()
   (interactive)
   ;; Just reinitialize the buffer every time to simplify development.
@@ -1647,41 +2107,44 @@ These are:
             (dolist (entry (cdr section))
               (if (listp entry)
                   (insert "  " (logview--help-format-keys entry "[1-5]" keys-width)
-                          "  " (car (last entry)) "\n")
-                (insert "\n  " (replace-regexp-in-string (rx "\\["
-                                                             (group (1+ (any alnum ?-)))
-                                                             (? " <" (group (1+ (not (any ?>)))) ">")
-                                                             "]")
-                                                         (lambda (text)
-                                                           (save-match-data
-                                                             (logview--help-format-keys (list (intern (match-string 1 text))) (match-string 2 text))))
-                                                         entry t t)
-                        "\n")))))))
+                          "  " (logview--help-substitute-keys (car (last entry))) "\n")
+                (insert "\n  " (logview--help-substitute-keys entry) "\n")))))))
     (goto-char 1)
     (help-mode)
     (let ((map (make-sparse-keymap)))
       (set-keymap-parent map help-mode-map)
       (substitute-key-definition 'revert-buffer 'undefined map help-mode-map)
       (use-local-map map)))
-    (pop-to-buffer "*Logview cheat sheet*"))
+  (pop-to-buffer "*Logview cheat sheet*"))
+
+(defun logview--help-substitute-keys (text)
+  (replace-regexp-in-string (rx "\\["
+                                (group (1+ (any alnum ?-)))
+                                (? " <" (group (1+ (not (any ?>)))) ">")
+                                "]")
+                            (lambda (text)
+                              (save-match-data
+                                (logview--help-format-keys (list (intern (match-string 1 text))) (match-string 2 text))))
+                            text t t))
 
 (defun logview--help-format-keys (entry &optional preferred-keys width)
   (if (listp entry)
-      (let ((strings))
+      (let (strings)
         (dolist (symbol entry)
           (when (symbolp symbol)
             (let ((best-length most-positive-fixnum)
-                  (matched-preferred-keys)
-                  (keys))
+                  best-matches-preferred-keys
+                  keys)
               (dolist (alternative (where-is-internal symbol logview-mode-map))
-                (setq alternative            (key-description alternative)
-                      matches-preferred-keys (when preferred-keys (string-match preferred-keys alternative)))
-                (when (or (< (length alternative) best-length)
-                          (and (= (length alternative) best-length)
-                               matches-preferred-keys
-                               (not matched-preferred-keys)))
-                  (setq keys        alternative
-                        best-length (length keys))))
+                (setq alternative (key-description alternative))
+                (let ((matches-preferred-keys (when preferred-keys (string-match preferred-keys alternative))))
+                  (when (or (< (length alternative) best-length)
+                            (and (= (length alternative) best-length)
+                                 matches-preferred-keys
+                                 (not best-matches-preferred-keys)))
+                    (setq keys                        alternative
+                          best-length                 (length keys)
+                          best-matches-preferred-keys matches-preferred-keys))))
               (push (if keys (propertize keys 'face 'font-lock-builtin-face) "") strings))))
         (let ((string (mapconcat 'identity (nreverse strings) " / ")))
           (if width
@@ -1691,7 +2154,7 @@ These are:
 
 (defun logview-refresh-buffer-as-needed ()
   "Append log file tail or else revert the whole buffer.
-This is conceptually the same as typing \\<logview-mode-map>\\[logview-append-log-file-tail], followed by \\<logview-mode-map>\\[logview-revert-buffer] if the
+This is conceptually the same as typing `\\<logview-mode-map>\\[logview-append-log-file-tail]', followed by `\\<logview-mode-map>\\[logview-revert-buffer]' if the
 first command fails.
 
 This command is faster than reloading the whole buffer in the
@@ -1719,7 +2182,7 @@ timestamps.
 
 This can be seen as an alternative to `auto-revert-tail-mode':
 instead of automatic reverting you ask for it explicitly.  It
-should be as simple as typing \\<logview-mode-map>\\[logview-append-log-file-tail], as no confirmations are asked."
+should be as simple as typing `\\<logview-mode-map>\\[logview-append-log-file-tail]', as no confirmations are asked."
   (interactive)
   (when (buffer-modified-p)
     (user-error "Cannot append file tail to a modified buffer"))
@@ -1732,7 +2195,7 @@ modified.
 
 This can be seen as an alternative to `auto-revert-mode': instead
 of automatic reverting you ask for it explicitly.  It should be
-as simple as typing \\<logview-mode-map>\\[logview-revert-buffer], as no confirmations are asked."
+as simple as typing `\\<logview-mode-map>\\[logview-revert-buffer]', as no confirmations are asked."
   (interactive)
   (let ((revert-without-query (when buffer-file-name (list (regexp-quote buffer-file-name))))
         (was-read-only        buffer-read-only))
@@ -1786,6 +2249,12 @@ returns non-nil."
 
 
 ;;; Internal functions (except helpers for specific command groups).
+
+(defmacro logview--internal-log (format-string &rest arguments)
+  ;; No such variable present on old Emacses, just don't print anything.
+  `(when (boundp 'inhibit-message)
+     (let ((inhibit-message t))
+       (message ,format-string ,@arguments))))
 
 (defun logview--guess-submode ()
   (save-excursion
@@ -1901,11 +2370,12 @@ returns non-nil."
     (unless cannot-match
       (dolist (timestamp-option (if timestamp-at timestamp-options '(nil)))
         (let* ((timestamp-pattern (assq 'java-pattern timestamp-option))
+               (timestamp-locale  (cdr (assq 'locale timestamp-option)))
                (timestamp-regexp  (if timestamp-pattern
                                       (condition-case error
                                           (apply #'datetime-matching-regexp 'java (cdr timestamp-pattern)
-                                                 :locale (cdr (assq 'locale timestamp-option))
-                                                 (append (cdr (assq 'datetime-options timestamp-option)) logview--datetime-options))
+                                                 :locale timestamp-locale
+                                                 (append (cdr (assq 'datetime-options timestamp-option)) logview--datetime-matching-options))
                                         ;; 'datetime' doesn't mention the erroneous pattern to keep
                                         ;; the error message concise.  Let's do it ourselves.
                                         (error (warn "In Java timestamp pattern '%s': %s"
@@ -1915,76 +2385,96 @@ returns non-nil."
           (when (or timestamp-regexp (null timestamp-at))
             (when timestamp-at
               (setcar timestamp-at (format "\\(?%d:%s\\)" logview--timestamp-group timestamp-regexp)))
-            (let ((regexp (apply #'concat parts)))
+            (let ((regexp      (apply #'concat parts))
+                  (level-index 0))
               (when (or (null test-line) (string-match regexp test-line))
                 (setq logview--submode-name           name
                       logview--process-buffer-changes t
                       logview--entry-regexp           regexp
                       logview--submode-features       features
-                      logview--submode-level-alist    nil)
+                      logview--submode-level-data     nil)
                 (logview--update-mode-name)
                 (when (memq 'level features)
                   (dolist (final-level logview--final-levels)
                     (dolist (level (cdr (assoc final-level levels)))
-                      (setq logview--submode-level-alist (cons (cons level final-level) logview--submode-level-alist))
-                      (let ((filtered-invisibility-spec (make-symbol (format "logview-filtered:%s" level))))
-                        (push (cons level (vector (make-symbol (format "logview:%s" level))
-                                                  filtered-invisibility-spec
-                                                  (intern (format "logview-%s-entry" (symbol-name final-level)))
-                                                  (intern (format "logview-level-%s" (symbol-name final-level)))
-                                                  (logview--hide-entry-callback filtered-invisibility-spec)
-                                                  (logview--show-entry-callback filtered-invisibility-spec)))
-                              logview--submode-level-data)))))
-                (logview--split-region-into-entries (point-min) (point-max) 'report-progress)
-                (add-hook 'after-change-functions 'logview--split-region-into-entries t t)
+                      (push (cons level (cons level-index (cons (intern (format "logview-%s-entry" (symbol-name final-level)))
+                                                                (intern (format "logview-level-%s" (symbol-name final-level))))))
+                            logview--submode-level-data)
+                      (setq level-index (1+ level-index)))))
+                (setq logview--submode-level-faces (make-vector level-index nil))
+                (dolist (level-data logview--submode-level-data)
+                  (aset logview--submode-level-faces (cadr level-data) (cddr level-data)))
+                (when (memq 'timestamp features)
+                  (let ((num-fractionals (apply #'datetime-pattern-num-second-fractionals 'java (cdr timestamp-pattern) logview--datetime-parsing-options)))
+                    (setq logview--submode-timestamp-parser           (apply #'datetime-parser-to-float 'java (cdr timestamp-pattern)
+                                                                             :locale timestamp-locale :timezone 'system
+                                                                             logview--datetime-parsing-options)
+                          logview--timestamp-difference-format-string (format "%%+.%df" num-fractionals)
+                          logview--timestamp-gap-format-string        (format "%%.%df" num-fractionals))))
                 (read-only-mode 1)
                 (when buffer-file-name
                   (pcase logview-auto-revert-mode
                     (`auto-revert-mode      (auto-revert-mode      1))
                     (`auto-revert-tail-mode (auto-revert-tail-mode 1))))
+                (logview--refilter)
                 (throw 'success nil)))))))))
 
 (defun logview--all-timestamp-formats ()
   (unless logview--all-timestamp-formats-cache
-    (let ((start-time (float-time))
-          (patterns (make-hash-table :test 'equal :size 1000))
-          (uniques  (make-hash-table :test 'equal :size 1000)))
-      (dolist (locale (datetime-list-locales t))
-        (let ((decimal-separator (char-to-string (datetime-locale-field locale :decimal-separator)))
-              last-time-pattern)
-          (dolist (time-variant '(:short :medium :long :full))
-            (let ((time-pattern (datetime-locale-time-pattern locale time-variant)))
-              (unless (string= time-pattern last-time-pattern)
-                (setq last-time-pattern time-pattern)
-                (when (and (datetime-pattern-includes-second-p 'java time-pattern)
-                           (not (datetime-pattern-includes-timezone-p 'java time-pattern)))
-                  (let (variants)
-                    (dolist (pattern (cons time-pattern
-                                           (mapcar (lambda (date-variant) (datetime-locale-date-time-pattern locale date-variant time-variant))
-                                                   '(:short :medium :long :full))))
-                      (push pattern                                                                                   variants)
-                      (push (replace-regexp-in-string "\\<s+\\>" (concat "\\&" decimal-separator "SSS")    pattern t) variants)
-                      (push (replace-regexp-in-string "\\<s+\\>" (concat "\\&" decimal-separator "SSSSSS") pattern t) variants))
-                    (dolist (pattern variants)
-                      (let* ((parts            (datetime-recode-pattern 'java 'parsed pattern))
-                             (locale-dependent (datetime-pattern-locale-dependent-p 'parsed parts))
-                             (key              (cons pattern (when locale-dependent locale))))
-                        (when (or locale-dependent (null (gethash key patterns)))
-                          (puthash key
-                                   (apply #'datetime-matching-regexp 'parsed parts :locale locale logview--datetime-options)
-                                   patterns)))))))))))
-      (maphash (lambda (key regexp)
-                 (let ((existing (gethash regexp uniques)))
-                   (if existing
-                       (unless (memq (cdr key) (cdr existing))
-                         (push (cdr key) (cdr existing)))
-                     (puthash regexp (cons (car key) (list (cdr key))) uniques))))
-               patterns)
-      (maphash (lambda (regexp key)
-                 (push `(,(car key) (regexp . ,regexp)) logview--all-timestamp-formats-cache))
-               uniques)
-      (let ((inhibit-message t))
-        (message "Logview/datetime: built list of %d timestamp regexps in %.3f s" (hash-table-count uniques) (- (float-time) start-time)))))
+    ;; Since there are now really lots of locales known by `datetime', cache this value
+    ;; not only in memory, but also on disk.  We use `extmap' to create and read the cache
+    ;; file.  If `datetime' reports a different locale database version, cache is
+    ;; discarded.
+    (let ((cache-file              (ignore-errors (extmap-init logview-cache-filename)))
+          (locale-database-version (if (fboundp #'datetime-locale-database-version) (with-no-warnings (datetime-locale-database-version)) 0)))
+      (when cache-file
+        (let ((cached-externally (extmap-get cache-file 'timestamp-formats t)))
+          (when (and cached-externally (equal (extmap-get cache-file 'locale-database-version t) locale-database-version))
+            (setq logview--all-timestamp-formats-cache (extmap-get cache-file 'timestamp-formats t)))))
+      (if logview--all-timestamp-formats-cache
+          (logview--internal-log "Logview: loaded locale timestamp formats from `%s'" logview-cache-filename)
+        (let ((start-time (float-time))
+              (patterns (make-hash-table :test 'equal :size 1000))
+              (uniques  (make-hash-table :test 'equal :size 1000)))
+          (dolist (locale (datetime-list-locales t))
+            (let ((decimal-separator (char-to-string (datetime-locale-field locale :decimal-separator)))
+                  last-time-pattern)
+              (dolist (time-variant '(:short :medium :long :full))
+                (let ((time-pattern (datetime-locale-time-pattern locale time-variant)))
+                  (unless (string= time-pattern last-time-pattern)
+                    (setq last-time-pattern time-pattern)
+                    (when (and (datetime-pattern-includes-second-p 'java time-pattern)
+                               (not (datetime-pattern-includes-timezone-p 'java time-pattern)))
+                      (let (variants)
+                        (dolist (pattern (cons time-pattern
+                                               (mapcar (lambda (date-variant) (datetime-locale-date-time-pattern locale date-variant time-variant))
+                                                       '(:short :medium :long :full))))
+                          (push pattern                                                                                   variants)
+                          (push (replace-regexp-in-string "\\<s+\\>" (concat "\\&" decimal-separator "SSS")    pattern t) variants)
+                          (push (replace-regexp-in-string "\\<s+\\>" (concat "\\&" decimal-separator "SSSSSS") pattern t) variants))
+                        (dolist (pattern variants)
+                          (let* ((parts            (datetime-recode-pattern 'java 'parsed pattern))
+                                 (locale-dependent (datetime-pattern-locale-dependent-p 'parsed parts))
+                                 (key              (cons pattern (when locale-dependent locale))))
+                            (when (or locale-dependent (null (gethash key patterns)))
+                              (puthash key
+                                       (apply #'datetime-matching-regexp 'parsed parts :locale locale logview--datetime-matching-options)
+                                       patterns)))))))))))
+          (maphash (lambda (key regexp)
+                     (let ((existing (gethash regexp uniques)))
+                       (if existing
+                           (unless (memq (cdr key) (cdr existing))
+                             (push (cdr key) (cdr existing)))
+                         (puthash regexp (cons (car key) (list (cdr key))) uniques))))
+                   patterns)
+          (maphash (lambda (regexp key)
+                     (push `(,(car key) (regexp . ,regexp)) logview--all-timestamp-formats-cache))
+                   uniques)
+          (logview--internal-log "Logview/datetime: built list of %d timestamp regexps in %.3f s" (hash-table-count uniques) (- (float-time) start-time))
+          (ignore-errors
+            (extmap-from-alist logview-cache-filename `((locale-database-version . ,locale-database-version)
+                                                        (timestamp-formats       . ,logview--all-timestamp-formats-cache))
+                               :overwrite t))))))
   logview--all-timestamp-formats-cache)
 
 
@@ -1993,136 +2483,150 @@ returns non-nil."
     (user-error "Couldn't determine log format; press C-c C-s to customize relevant options"))
   (dolist (assertion assertions)
     (unless (or (eq assertion 'message) (memq assertion logview--submode-features))
-      (user-error (cdr (assq assertion '((level  . "Log lacks entry levels")
-                                         (name   . "Log lacks logger names")
-                                         (thread . "Log doesn't include thread names"))))))))
+      (user-error (cdr (assq assertion '((level     . "Log lacks entry levels")
+                                         (name      . "Log lacks logger names")
+                                         (thread    . "Log doesn't include thread names")
+                                         (timestamp . "Log entries lack timestamps"))))))))
 
 
-(defun logview--maybe-complain-about-movement (direction remaining &optional as-important-entries)
+(defun logview--forward-entry (&optional n validator)
+  (logview--locate-current-entry last-valid-entry last-valid-start
+    (cond ((> n 0)
+           (logview--iterate-entries-forward (point)
+                                             (lambda (entry start)
+                                               (> (setq last-valid-entry entry
+                                                        last-valid-start start
+                                                        n                (1- n))
+                                                  0))
+                                             t validator t))
+          ((< n 0)
+           (logview--iterate-entries-backward (point)
+                                              (lambda (entry start)
+                                                (< (setq last-valid-entry entry
+                                                         last-valid-start start
+                                                         n                (1+ n))
+                                                   0))
+                                              t validator t)))
+    (goto-char (logview--entry-message-start last-valid-entry last-valid-start)))
+  n)
+
+(defun logview--maybe-complain-about-movement (direction remaining &optional type)
   ;; Using 'equal' since 'remaining' may also be nil.
   (unless (equal remaining 0)
-    (user-error (if as-important-entries
-                    (if (> direction 0) "No next (visible) as important entry" "No previous (visible) as important entry")
-                  (if (> direction 0) "No next (visible) entry" "No previous (visible) entry")))))
+    (user-error (pcase type
+                  (`nil          (if (> direction 0) "No next (visible) entry"              "No previous (visible) entry"))
+                  (`as-important (if (> direction 0) "No next (visible) as important entry" "No previous (visible) as important entry"))
+                  (_             (if (> direction 0) "No next (visible) entry in view `%s'" "No previous (visible) entry in view `%s'")))
+                type)))
 
 
-(defun logview--match-current-entry ()
-  "Match the header of the log entry where the point currently is.
+(defun logview--do-locate-current-entry (&optional position)
+  "Return the entry around POSITION and its beginning.
+If POSITION is nil, take the current value of point as the
+position, and also signal a user-level error if no entries can be
+located."
+  (let* ((entry-at (or position (point)))
+         (entry    (or (get-text-property entry-at 'logview-entry)
+                       (progn (logview--find-region-entries entry-at (+ entry-at logview--lazy-region-size))
+                              (get-text-property entry-at 'logview-entry)))))
+    (if entry
+        (when (and (> entry-at 1) (eq (get-text-property (1- entry-at) 'logview-entry) entry))
+          (setq entry-at (or (previous-single-property-change entry-at 'logview-entry) 1)))
+      (when (setq entry-at (or (next-single-property-change entry-at 'logview-entry)
+                               (when (and (> entry-at 1) (get-text-property (1- entry-at) 'logview-entry))
+                                 (previous-single-property-change entry-at 'logview-entry))))
+        (setq entry (get-text-property entry-at 'logview-entry))))
+    (if entry
+        (cons entry entry-at)
+      (unless position
+        (user-error "Unable to locate any log entries")))))
 
-Return value is non-nil on success.  Point is either before or
-after the header, i.e. still in the same log entry, but there are
-no more guarantees.  Match data is set appropriately for the
-header."
-  (forward-line 0)
-  (or (looking-at logview--entry-regexp)
-      (re-search-backward logview--entry-regexp nil t)
-      (re-search-forward  logview--entry-regexp nil t)))
-
-(defun logview--match-successive-entries (n &optional only-visible validator)
-  "Match N entries after (if N is positive) or before (negative)
-the current one.  If N is zero, match just the current entry.
-
-If ONLY-VISIBLE is non-nil, hidden entries are skipped.  If
-VALIDATOR is non-nil, entries for which the function returns nil
-are skipped too.
-
-Returns the remaining number, i.e. zero if there are enough valid
-entries.  If it never found any valid entries, returns nil.
-There is no guarantees about point location after the call, but
-match data will be set for the last valid matched header."
-  (let* ((forward          (> n 0))
-         (direction        (cl-signum n))
-         (successful-match '(nil)))
-    (when (logview--match-current-entry)
-      (when (or (null validator) (funcall validator))
-        (match-data t successful-match))
-      (when (/= n 0)
-        (while (and (= (forward-line direction) 0)
-                    (if forward
-                        (re-search-forward logview--entry-regexp nil t)
-                      (or (looking-at logview--entry-regexp)
-                          (re-search-backward logview--entry-regexp nil t)))
-                    (if (or (and only-visible (invisible-p (match-beginning 0)))
-                            (and validator (not (funcall validator))))
-                        t
-                      (match-data t successful-match)
-                      (/= (setq n (- n direction)) 0))))))
-    (if (equal successful-match '(nil))
-        nil
-      (set-match-data successful-match)
-      n)))
-
-
-(defun logview--iterate-entries-forward (callback &optional only-visible validator)
+(defun logview--iterate-entries-forward (position callback &optional only-visible validator skip-current)
   "Invoke CALLBACK for successive valid log entries forward.
-Iteration starts at the current entry and continues forward until
-CALLBACK returns nil or end of buffer is reached.
 
-CALLBACK is called with three arguments: beginning of the entry,
-end of its first line and its end (the last two are equal unless
-the entry spans multiple lines).  CALLBACK may not access match
-data and must make sure point and match data are preserved.
+Iteration starts at the entry around POSITION (or the next, if
+SKIP-CURRENT is non-nil) and continues forward until CALLBACK
+returns nil or end of buffer is reached.  This function does not
+alter the point, nor is it affected in any way by CALLBACK or
+VALIDATOR altering it.
+
+CALLBACK is called with two arguments: value of the
+`logview-entry' property and the beginning of the entry.
 
 If ONLY-VISIBLE is non-nil, hidden entries are skipped.  If
 VALIDATOR is non-nil, entries for which the function returns nil
-are skipped too.  VALIDATOR is always called with match data set
-and point at the beginning of the next line."
-  (when (logview--match-current-entry)
-    (let ((entry-begin (match-beginning 0))
-          (after-first-line)
-          (entry-end)
-          (limit       (point-max))
-          (invalid))
-      (while (progn
-               (forward-line)
-               (setq invalid (or (and only-visible (invisible-p entry-begin))
-                                 (and validator    (not (funcall validator)))))
-               (setq after-first-line (point)
-                     entry-end        (if (re-search-forward logview--entry-regexp nil t)
-                                          (match-beginning 0)
-                                        limit))
-               (when (or invalid (funcall callback entry-begin after-first-line entry-end))
-                 (/= (setq entry-begin entry-end) limit)))))))
+are skipped too.  VALIDATOR is called with the same parameters as
+CALLBACK."
+  (let ((entry+start (logview--do-locate-current-entry position)))
+    (when entry+start
+      (let ((entry    (car entry+start))
+            (entry-at (cdr entry+start))
+            (limit    (1+ (buffer-size))))
+        (unless (and skip-current (>= (setq entry-at (logview--entry-end entry entry-at)) limit))
+          (while (progn (setq entry (or (get-text-property entry-at 'logview-entry)
+                                        (progn (logview--find-region-entries entry-at (+ entry-at logview--lazy-region-size))
+                                               (get-text-property entry-at 'logview-entry))))
+                        (and (or (and only-visible (invisible-p entry-at))
+                                 (and validator (not (funcall validator entry entry-at)))
+                                 (funcall callback entry entry-at))
+                             (< (setq entry-at (logview--entry-end entry entry-at)) limit)))))))))
 
-(defun logview--iterate-entries-backward (callback &optional only-visible validator)
+(defun logview--iterate-entries-backward (position callback &optional only-visible validator skip-current)
   "Invoke CALLBACK for successive valid log entries backward.
-Iteration starts at the previous entry (not the current!) and
-continues backward until CALLBACK returns nil or beginning of
-buffer is reached.
-
 See `logview--iterate-entries-forward' for details."
-  (when (logview--match-current-entry)
-    (let ((entry-begin (match-beginning 0))
-          (entry-end))
-      (while (and (= (forward-line -1) 0)
-                  (or (looking-at logview--entry-regexp)
-                      (re-search-backward logview--entry-regexp nil t))
-                  (progn
-                    (setq entry-end   entry-begin
-                          entry-begin (match-beginning 0))
-                    (forward-line)
-                    (or (and only-visible (invisible-p entry-begin))
-                        (and validator    (not (funcall validator)))
-                        (when (funcall callback entry-begin (point) entry-end)
-                          (goto-char entry-begin)))))))))
+  (let ((entry+start (logview--do-locate-current-entry position)))
+    (when entry+start
+      (let ((entry    (car entry+start))
+            (entry-at (cdr entry+start)))
+        (unless (and skip-current (<= (setq entry-at (1- entry-at)) 0 ))
+          (while (and (setq entry (or (get-text-property entry-at 'logview-entry)
+                                      (progn (logview--find-region-entries (max 1 (- entry-at logview--lazy-region-size)) (1+ entry-at) t)
+                                             (get-text-property entry-at 'logview-entry))))
+                      (progn (unless (or (= entry-at 1) (not (eq (get-text-property (1- entry-at) 'logview-entry) entry)))
+                               (setq entry-at (or (previous-single-property-change entry-at 'logview-entry) 1)))
+                             (when (or (and only-visible (invisible-p entry-at))
+                                       (and validator (not (funcall validator entry entry-at)))
+                                       (funcall callback entry entry-at))
+                               (> (setq entry-at (1- entry-at)) 0))))))))))
 
-(defun logview--iterate-successive-entries (n callback &optional only-visible validator)
+(defun logview--iterate-successive-entries (position n callback &optional only-visible validator)
   (when (/= n 0)
     (let ((direction (cl-signum n)))
-      (funcall (if (> n 0) 'logview--iterate-entries-forward 'logview--iterate-entries-backward)
-               (lambda (begin after-first-line entry-end)
-                 (funcall callback begin after-first-line entry-end)
+      (funcall (if (> n 0) #'logview--iterate-entries-forward #'logview--iterate-entries-backward)
+               position
+               (lambda (entry entry-at)
+                 (funcall callback entry entry-at)
                  (/= (setq n (- n direction)) 0))
                only-visible validator)))
   n)
 
 (defun logview--iterate-entries-in-region (begin end callback &optional only-visible validator)
-  (goto-char (min begin end))
   (let ((limit (max begin end)))
-    (logview--iterate-entries-forward (lambda (begin after-first-line end)
-                                        (funcall callback begin after-first-line end)
-                                        (< end limit))
+    (logview--iterate-entries-forward (min begin end)
+                                      (lambda (entry entry-at)
+                                        (funcall callback entry entry-at)
+                                        (< (logview--entry-end entry entry-at) limit))
                                       only-visible validator)))
+
+
+(defun logview--refilter ()
+  (logview--retire-hiding-symbol 'logview--filtered-symbol)
+  (logview--update-invisibility-spec)
+  (logview--refontify-buffer))
+
+(defun logview--refontify-buffer ()
+  (logview--std-temporarily-widening
+    (with-no-warnings (if (fboundp 'font-lock-flush)
+                          (font-lock-flush)
+                        ;; Emacs 24 doesn't have `font-lock-flush'.
+                        (font-lock-fontify-buffer)))))
+
+
+(defun logview--maybe-pulse-current-entry (&optional why)
+  (when (or (null why) (memq why logview-pulse-entries))
+    (save-excursion
+      (logview--locate-current-entry entry start
+        (pulse-momentary-highlight-region start (logview--entry-end entry start) 'logview-pulse)))))
 
 
 (defun logview--update-mode-name ()
@@ -2141,40 +2645,44 @@ See `logview--iterate-entries-forward' for details."
                       (format "Logview/%s" logview--submode-name)))))
 
 (defun logview--update-invisibility-spec ()
-  (let ((invisibility-spec '(logview-hidden-entry logview-hidden-details)))
-    (if logview--submode-level-alist
-        (let ((show        (null logview--min-shown-level))
-              (always-show nil))
-          (dolist (level-pair logview--submode-level-data)
-            (when (equal (car level-pair) logview--min-shown-level)
-              (setq show t))
-            (when (equal (car level-pair) logview--min-always-shown-level)
-              (setq always-show t))
-            (unless show
-              (push (aref (cdr level-pair) 0) invisibility-spec))
-            (unless always-show
-              (push (aref (cdr level-pair) 1) invisibility-spec))))
-      (push 'logview-filtered invisibility-spec))
+  (let ((invisibility-spec (list logview--hidden-details-symbol logview--hidden-entry-symbol logview--filtered-symbol)))
     (when logview--hide-all-details
       (push 'logview-details invisibility-spec))
-    (setq buffer-invisibility-spec
-          (if logview-show-ellipses
-              (mapcar (lambda (x) (cons x t)) invisibility-spec)
-            invisibility-spec))
-    ;; This weird looking command was suggested in
+    (when logview-show-ellipses
+      (setq invisibility-spec (mapcar (lambda (x) (cons x t)) invisibility-spec)))
+    ;; Try to work nicely with other packages, e.g. minor modes.
+    (when (consp buffer-invisibility-spec)
+      (let ((case-fold-search nil))
+        (dolist (element buffer-invisibility-spec)
+          (unless (string-match "^logview-" (symbol-name (cond ((symbolp element)            element)
+                                                               ((symbolp (car-safe element)) (car-safe element)))))
+            (push element invisibility-spec)))))
+    (setq buffer-invisibility-spec (nreverse invisibility-spec))
+    ;; This weird-looking command was suggested in
     ;; irc.freenode.net#emacs and seems to force buffer redraw.
     ;; Otherwise change to 'buffer-invisibility-spec' doesn't have
     ;; immediate effect here.
     (force-mode-line-update)))
 
+(defun logview--retire-hiding-symbol (symbol-var)
+  (set symbol-var (intern (replace-regexp-in-string "[0-9]+$" (lambda (generation) (number-to-string (1+ (string-to-number generation))))
+                                                    (symbol-name (symbol-value symbol-var)) t t))))
 
+
+;; Return non-nil if filters have changed.
 (defun logview--parse-filters (&optional to-reset)
-  ;; As we "leave" current buffer, we need to rebind variables
-  ;; locally, so their values are properly transferred.
-  (let ((filters logview--current-filter-text)
+  (let ((filters (logview--do-parse-filters logview--current-filter-text to-reset)))
+    (unless (prog1 (equal (cdar logview--current-filter) (cdar filters))
+              (setq logview--current-filter      filters
+                    logview--current-filter-text (or (caar filters) "")))
+      (logview--refilter)
+      (logview--update-mode-name)
+      t)))
+
+(defun logview--do-parse-filters (filters &optional to-reset)
+  (let (non-discarded-lines
         min-shown-level
         min-always-shown-level
-        non-discarded-lines
         include-name-regexps
         exclude-name-regexps
         include-thread-regexps
@@ -2207,12 +2715,62 @@ See `logview--iterate-entries-forward' for details."
                           ("m+" (push regexp include-message-regexps))
                           ("m-" (push regexp exclude-message-regexps))))))))
            t))))
-    (logview--set-min-level min-shown-level min-always-shown-level)
-    (setq logview--current-filter-text (apply 'concat (nreverse non-discarded-lines))
-          logview--name-filter         (logview--build-filter include-name-regexps    exclude-name-regexps)
-          logview--thread-filter       (logview--build-filter include-thread-regexps  exclude-thread-regexps)
-          logview--message-filter      (logview--build-filter include-message-regexps exclude-message-regexps))
-    (logview--update-mode-name)))
+    (setq min-shown-level         (unless (equal min-shown-level (caar logview--submode-level-data))
+                                    (cadr (assoc min-shown-level logview--submode-level-data)))
+          min-always-shown-level  (cadr (assoc min-always-shown-level logview--submode-level-data))
+          include-name-regexps    (logview--standardize-regexp-options include-name-regexps)
+          exclude-name-regexps    (logview--standardize-regexp-options exclude-name-regexps)
+          include-thread-regexps  (logview--standardize-regexp-options include-thread-regexps)
+          exclude-thread-regexps  (logview--standardize-regexp-options exclude-thread-regexps)
+          include-message-regexps (logview--standardize-regexp-options include-message-regexps)
+          exclude-message-regexps (logview--standardize-regexp-options exclude-message-regexps))
+    ;; Deliberately not checking `min-always-shown-level': it has no effect without other
+    ;; filters.
+    (when (or min-shown-level include-name-regexps exclude-name-regexps
+              include-thread-regexps exclude-thread-regexps include-message-regexps exclude-message-regexps)
+      (cons (list (apply 'concat (nreverse non-discarded-lines)) min-shown-level min-always-shown-level include-name-regexps exclude-name-regexps
+                  include-thread-regexps exclude-thread-regexps include-message-regexps exclude-message-regexps)
+            (let ((level-form (if (and min-shown-level min-always-shown-level) 'level '(logview--entry-level entry)))
+                  clauses)
+              (when min-shown-level
+                (push `(<= ,level-form ,min-shown-level) clauses))
+              (push (logview--build-validator-regexp-clause include-name-regexps    exclude-name-regexps    logview--name-group)    clauses)
+              (push (logview--build-validator-regexp-clause include-thread-regexps  exclude-thread-regexps  logview--thread-group)  clauses)
+              (push (logview--build-validator-regexp-clause include-message-regexps exclude-message-regexps logview--message-group) clauses)
+              (setq clauses (delq nil clauses))
+              (let ((validator (if (cdr clauses) `(and ,@(nreverse clauses)) (car clauses))))
+                (when min-always-shown-level
+                  (setq validator `(or (<= ,level-form ,min-always-shown-level) ,validator)))
+                (when (eq level-form 'level)
+                  (setq validator `(let ((level (logview--entry-level entry))) ,validator)))
+                ;; Here `eval' is used to translate the lambda into a closure.
+                (byte-compile (eval `(lambda (entry start) (ignore start) ,validator) t))))))))
+
+;; To prevent refiltering on insignificant changes, we enforce canonical option ordering
+;; and drop any duplicates.
+(defun logview--standardize-regexp-options (options)
+  (delete-consecutive-dups (sort options #'string<)))
+
+(defun logview--build-validator-regexp-clause (include-regexps exclude-regexps entry-group)
+  (when (or include-regexps exclude-regexps)
+    (let* ((string-fetcher (if (= entry-group logview--message-group)
+                               `(logview--entry-message entry start)
+                             `(logview--entry-group entry start ,entry-group)))
+           (string-form    (if (and include-regexps exclude-regexps) 'string string-fetcher))
+           subclauses)
+      (when include-regexps
+        (push `(string-match ,(logview--build-filter-regexp include-regexps) ,string-form) subclauses))
+      (when exclude-regexps
+        (push `(not (string-match ,(logview--build-filter-regexp exclude-regexps) ,string-form)) subclauses))
+      (let ((clause (if (cdr subclauses) `(and ,@(nreverse subclauses)) (car subclauses))))
+        (when (eq string-form 'string)
+          (setq clause `(let ((string ,string-fetcher)) ,clause)))
+        clause))))
+
+;; FIXME: Resulting regexp will not be valid if any of the options uses group
+;;        backreferences (\N) and maybe some other constructs.
+(defun logview--build-filter-regexp (options)
+  (mapconcat #'identity options "\\|"))
 
 (defun logview--iterate-filter-text-lines (filters callback)
   (with-temp-buffer
@@ -2253,7 +2811,7 @@ next line, which is usually one line beyond END."
                   (when (member type '("m+" "m-"))
                     (while (looking-at "\\.\\. ")
                       (forward-line)))
-                  (funcall callback type line-begin begin (if (bolp) (logview--linefeed-back-checked (point)) (point))))))))
+                  (funcall callback type line-begin begin (if (bolp) (logview--character-back-checked (point)) (point))))))))
 
 (defun logview--canonical-filter-text (filters)
   (let (filter-lines)
@@ -2263,174 +2821,47 @@ next line, which is usually one line beyond END."
                                             (push (buffer-substring-no-properties line-begin (1+ end)) filter-lines))))
     (apply #'concat (sort filter-lines #'string<))))
 
-(defun logview--build-filter (include-regexp-list exclude-regexp-list)
-  (let ((include-regexp (logview--build-filter-regexp include-regexp-list))
-        (exclude-regexp (logview--build-filter-regexp exclude-regexp-list)))
-    (list (if include-regexp
-              (if exclude-regexp
-                  (lambda (string) (and (string-match include-regexp string) (not (string-match exclude-regexp string))))
-                (lambda (string) (string-match include-regexp string)))
-            (when exclude-regexp
-              (lambda (string) (not (string-match exclude-regexp string)))))
-          include-regexp
-          exclude-regexp)))
-
 (defun logview--filter-regexp (begin end)
   (replace-regexp-in-string "\n\\.\\. " "\n" (buffer-substring-no-properties begin end)))
 
-(defun logview--apply-parsed-filters (&optional cancel-explicit-hiding)
-  (logview--process-region-entries 1 (1+ (buffer-size)) nil cancel-explicit-hiding
-                                   (lambda (begin end) (make-progress-reporter "Filtering..." begin end))))
-
-(defun logview--process-region-entries (region-begin region-end set-up-entries cancel-explicit-hiding reporter-builder)
-  (let* ((name-filter            (car logview--name-filter))
-         (thread-filter          (car logview--thread-filter))
-         (no-name/thread-filters (and (null name-filter) (null thread-filter)))
-         (message-filter         (car logview--message-filter))
-         (filter-id              (list (cdr logview--name-filter) (cdr logview--thread-filter) (cdr logview--message-filter)))
-         ;; Need a copy, since entry matching is always case-sensitive
-         ;; (see 'logview--std-matching-and-altering').
-         (case-insensitive       case-fold-search))
-    (when (or set-up-entries cancel-explicit-hiding (not (equal logview--applied-filter-id filter-id)))
-      (logview--std-matching-and-altering
-        (save-restriction
-          (widen)
-          (goto-char region-begin)
-          (let ((anchored (logview--match-current-entry)))
-            (when (and set-up-entries (or (not anchored) (> (point) region-begin)))
-              ;; Asked to set up entries, but the buffer begins with
-              ;; or completely consists of text we don't recognize.
-              (put-text-property 1 (if anchored (match-beginning 0) (1+ (buffer-size))) 'face      nil)
-              (put-text-property 1 (if anchored (match-beginning 0) (1+ (buffer-size))) 'invisible nil))
-            (when anchored
-              (let* ((reporter           (when reporter-builder (funcall reporter-builder (match-beginning 0) region-end)))
-                     (have-timestamp     (memq 'timestamp logview--submode-features))
-                     (have-level         (memq 'level     logview--submode-features))
-                     (have-name          (memq 'name      logview--submode-features))
-                     (have-thread        (memq 'thread    logview--submode-features))
-                     (hider              (unless have-level (logview--hide-entry-callback 'logview-filtered)))
-                     (shower             (unless have-level (logview--show-entry-callback 'logview-filtered)))
-                     (explicit-shower    (when cancel-explicit-hiding (logview--show-entry-callback 'logview-hidden-entry)))
-                     (num-hidden         0)
-                     (num-visible        0)
-                     (match-data-storage '(nil))
-                     message-begin
-                     matches-name/thread
-                     level-data)
-                ;; Because 'callback' doesn't get access to match
-                ;; data, while 'validator' doesn't know all entry
-                ;; limits, we use both and pass 'matches-name/thread'
-                ;; from the validator to the callback.
-                (logview--iterate-entries-forward
-                 (lambda (begin after-first-line end)
-                   (when (and set-up-entries (< after-first-line end) have-level)
-                     (put-text-property after-first-line end 'face (aref level-data 2))
-                     (put-text-property (logview--linefeed-back after-first-line) (logview--linefeed-back end)
-                                        'invisible (list (aref level-data 0) 'logview-details)))
-                   ;; Remember that 'matches-name/thread' is not the
-                   ;; final value, we still need to check if entry's
-                   ;; message passes filters.
-                   (if (and matches-name/thread
-                            (or (null message-filter)
-                                ;; Ideally would just match in the
-                                ;; buffer itself, but that's probably
-                                ;; unsound due to anchors.
-                                (prog2
-                                    ;; For speed optimization we don't
-                                    ;; use 'save-match-data'.
-                                    (match-data t match-data-storage)
-                                    (let ((case-fold-search case-insensitive))
-                                      (funcall message-filter (buffer-substring-no-properties message-begin end)))
-                                  (set-match-data match-data-storage))))
-                       (unless set-up-entries
-                         (funcall (or shower (aref level-data 5)) begin after-first-line end)
-                         (setq num-visible (1+ num-visible)))
-                     (funcall (or hider (aref level-data 4)) begin after-first-line end)
-                     (setq num-hidden (1+ num-hidden)))
-                   (when explicit-shower
-                     (funcall explicit-shower begin after-first-line end))
-                   (when reporter
-                     (progress-reporter-update reporter end))
-                   ;; Continuing condition.
-                   (< end region-end))
-                 nil
-                 (lambda ()
-                   (let ((case-fold-search case-insensitive))
-                     (when have-level
-                       (setq level-data (cdr (assoc (match-string logview--level-group) logview--submode-level-data))))
-                     (when set-up-entries
-                       (when have-level
-                         ;; Point is guaranteed to be at the start of the next line.
-                         (put-text-property (match-beginning 0) (point) 'face (aref level-data 2))
-                         (put-text-property (logview--linefeed-back-checked (match-beginning 0)) (logview--linefeed-back (point))
-                                            'invisible (list (aref level-data 0)))
-                         (add-face-text-property (match-beginning logview--level-group)
-                                                 (match-end       logview--level-group)
-                                                 (aref level-data 3)))
-                       (when have-timestamp
-                         (add-face-text-property (match-beginning logview--timestamp-group)
-                                                 (match-end       logview--timestamp-group)
-                                                 'logview-timestamp))
-                       (when have-name
-                         (add-face-text-property (match-beginning logview--name-group)
-                                                 (match-end       logview--name-group)
-                                                 'logview-name))
-                       (when have-thread
-                         (add-face-text-property (match-beginning logview--thread-group)
-                                                 (match-end       logview--thread-group)
-                                                 'logview-thread)))
-                     (setq message-begin       (match-end 0)
-                           matches-name/thread (or no-name/thread-filters
-                                                   ;; Since the filters involve regexp matching themselves,
-                                                   ;; we need to store log entry parts before calling any.
-                                                   (let ((name   (when name-filter   (match-string-no-properties logview--name-group)))
-                                                         (thread (when thread-filter (match-string-no-properties logview--thread-group))))
-                                                     (and (or (null name)   (funcall name-filter   name))
-                                                          (or (null thread) (funcall thread-filter thread)))))))
-                   ;; Operate on all entries.
-                   t))
-                (if set-up-entries
-                    (when reporter
-                      (progress-reporter-done reporter))
-                  (cond ((= num-hidden 0)
-                         (message (if (equal filter-id logview--empty-filter-id) "Filters are reset" "Filtering complete, nothing was hidden")))
-                        ((= num-visible 0)
-                         (message "Filtering complete, all entries were hidden"))
-                        (t
-                         (message "Filtering complete, %d %s out of %d (%.1f%%) %s hidden"
-                                  num-hidden (if (= num-hidden 1) "entry" "entries") (+ num-hidden num-visible)
-                                  (/ (* num-hidden 100.0) (+ num-hidden num-visible)) (if (= num-hidden 1) "was" "were")))))))))
-      (setq logview--applied-filter-id filter-id)))))
-
-;; FIXME: Resulting regexp will not be valid if any of the options
-;;        uses group backreferences (\N) and maybe some other
-;;        constructs.
-(defun logview--build-filter-regexp (options)
-  (when options
-    ;; To prevent refiltering on insignificant changes, we enforce
-    ;; canonical option ordering and drop any duplicates.
-    (mapconcat 'identity (delete-consecutive-dups (sort options 'string<)) "\\|")))
-
-
-(defun logview--show-entry-callback (hider)
-  (lambda (begin after-first-line end)
-    (let ((value (get-text-property begin 'invisible)))
-      (when (memq hider value)
-        (put-text-property (logview--linefeed-back-checked begin) (logview--linefeed-back after-first-line)
-                           'invisible (remq hider value))
-        (when (> end after-first-line)
-          (put-text-property (logview--linefeed-back after-first-line) (logview--linefeed-back end)
-                             'invisible (remq hider (get-text-property after-first-line 'invisible))))))))
-
-(defun logview--hide-entry-callback (hider)
-  (lambda (begin after-first-line end)
-    (let ((value (get-text-property begin 'invisible)))
-      (unless (memq hider value)
-        (put-text-property (logview--linefeed-back-checked begin) (logview--linefeed-back after-first-line)
-                           'invisible (cons hider value))
-        (when (> end after-first-line)
-          (put-text-property (logview--linefeed-back after-first-line) (logview--linefeed-back end)
-                             'invisible (cons hider (get-text-property after-first-line 'invisible))))))))
+(defun logview--find-region-entries (region-start region-end &optional dont-stop-early)
+  (logview--std-altering
+    (save-excursion
+      (save-match-data
+        (let ((case-fold-search         nil)
+              (buffer-invisibility-spec nil))
+          (goto-char region-start)
+          (forward-line 0)
+          (when (or (looking-at logview--entry-regexp)
+                    (re-search-backward logview--entry-regexp nil t)
+                    (re-search-forward  logview--entry-regexp nil t))
+            (setq region-end (min region-end (1+ (buffer-size))))
+            (let* ((match-data  (match-data t))
+                   ;; The following depends on exact submode format, i.e. on how many
+                   ;; groups there are in `logview--entry-regexp'.
+                   (num-points  (- (length match-data) 2))
+                   (entry-start (car match-data))
+                   (have-level  (memq 'level logview--submode-features)))
+              (while (and (or dont-stop-early (null (get-text-property entry-start 'logview-entry)))
+                          (let* ((details-start   (progn (forward-line 1) (point)))
+                                 (have-next-entry (re-search-forward logview--entry-regexp nil t))
+                                 (entry-end       (if have-next-entry (match-beginning 0) (point-max)))
+                                 ;; See description of `logview-entry' above.
+                                 (logview-entry   (make-vector 13 nil)))
+                            (aset logview-entry 0 (- entry-end entry-start))
+                            (let ((points (cdr match-data)))
+                              (dotimes (k num-points)
+                                (let ((point (pop points)))
+                                  (aset logview-entry (1+ k) (when point (- point entry-start))))))
+                            (when (< details-start entry-end)
+                              (aset logview-entry 10 (- details-start entry-start)))
+                            (when have-level
+                              (aset logview-entry 11 (cadr (assoc (logview--entry-group logview-entry entry-start logview--level-group)
+                                                                  logview--submode-level-data))))
+                            (match-data t match-data)
+                            (put-text-property entry-start entry-end 'logview-entry logview-entry)
+                            (setq entry-start entry-end)
+                            (< entry-start region-end)))))))))))
 
 
 (defun logview--iterate-split-alists (callback &rest alists)
@@ -2473,6 +2904,22 @@ This list is preserved across Emacs session in
          (warn "%s" (error-message-string error)))))
     (setq logview--views-initialized t))
   logview--views)
+
+(defun logview--find-view (view &optional internal)
+  (if (stringp view)
+      (let ((all-views (logview--views))
+            result)
+        (while all-views
+          (let ((candidate (pop all-views)))
+            (when (and (string= (plist-get candidate :name) view)
+                       (or (null (plist-get candidate :submode)) (string= (plist-get candidate :submode) logview--submode-name)))
+              (setq result    candidate
+                    all-views nil))))
+        (or result (error "Unknown view `%s'" view)))
+    (if (and (listp view) (stringp (plist-get view :name)))
+        view
+      (unless internal
+        (error "Invalid view object `%S'" view)))))
 
 (defun logview--parse-view-definitions (&optional warn-about-garbage)
   (catch 'done
@@ -2523,6 +2970,21 @@ This list is preserved across Emacs session in
       (write-region (point-min) (point-max) logview-views-file nil 'silent)
       (setq logview--views-need-saving nil))))
 
+(defun logview--after-updating-view-definitions ()
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (and (eq major-mode 'logview-mode) logview--highlighted-view-name)
+        (logview--do-highlight-view-entries logview--highlighted-view-name)))))
+
+(defun logview--do-highlight-view-entries (view)
+  (setq view (logview--find-view view t))
+  (let ((filters (logview--do-parse-filters (plist-get view :filters))))
+    (setq logview--highlighted-view-name (plist-get view :name))
+    (unless (prog1 (equal (cdar logview--highlighted-filter) (cdar filters))
+              (setq logview--highlighted-filter filters))
+      (logview--refontify-buffer))))
+
+
 (defun logview--completing-read (&rest arguments)
   (apply (or logview-completing-read-function
              (if (and (boundp 'ido-mode) (fboundp 'ido-completing-read) ido-mode)
@@ -2534,16 +2996,147 @@ This list is preserved across Emacs session in
 
 ;;; Internal commands meant as hooks.
 
-(defun logview--split-region-into-entries (begin end &optional old-length)
-  "Parse log entries in given region.
-Optional third argument is to make the function suitable for
-`after-change-functions' and is ignored there.  Special value
-'report-progress for this argument is treated differently."
-  (when logview--process-buffer-changes
-    (save-match-data
-      (logview--process-region-entries begin end t nil
-                                       (when (eq old-length 'report-progress)
-                                         (lambda (begin end) (make-progress-reporter "Parsing buffer..." begin end)))))))
+(defun logview--invalidate-region-entries (region-start region-end &optional _old-length)
+  (logview--std-temporarily-widening
+    (logview--std-altering
+      (when (> region-start (point-min))
+        ;; Here we need to go to the entry beginning and then one more entry back: it is
+        ;; possible that after the change current text has to be merged into the previous
+        ;; entry as details.
+        (let ((entry (get-text-property region-start 'logview-entry)))
+          (when entry
+            (when (eq (get-text-property (1- region-start) 'logview-entry) entry)
+              (setq region-start (or (previous-single-property-change region-start 'logview-entry) (point-min))))))
+        (when (and (> region-start (point-min)) (get-text-property (1- region-start) 'logview-entry))
+          (setq region-start (or (previous-single-property-change (1- region-start) 'logview-entry) (point-min)))))
+      (when (< region-end (point-max))
+        (let ((entry (get-text-property region-end 'logview-entry)))
+          (when (and entry (eq (get-text-property (1+ region-end) 'logview-entry) entry))
+            (setq region-end (or (next-single-property-change region-end 'logview-entry) (point-max))))))
+      (remove-list-of-text-properties region-start region-end '(logview-entry fontified)))))
+
+(defun logview--fontify-region (region-start region-end _loudly)
+  (when (logview-initialized-p)
+    (logview--std-temporarily-widening
+      ;; We are very fast.  Don't fontify too little to avoid overhead.
+      (when (and (< region-end (point-max)) (not (get-text-property (1+ region-end) 'fontified)))
+        (let ((expanded-region-end (+ region-start logview--lazy-region-size)))
+          (when (< region-end expanded-region-end)
+            (setq region-end (or (next-single-property-change (1+ region-end) 'fontified nil expanded-region-end) expanded-region-end)))))
+      (when (and (> region-start (point-min)) (not (get-text-property (1- region-start) 'fontified)))
+        (let ((expanded-region-start (max 1 (- region-end logview--lazy-region-size))))
+          (when (> region-start expanded-region-start)
+            (setq region-start (or (previous-single-property-change (1- region-start) 'fontified nil expanded-region-start) expanded-region-start)))))
+      (let ((first-entry-start (cdr (logview--do-locate-current-entry region-start))))
+        (when first-entry-start
+          (setq region-start first-entry-start)
+          (logview--std-altering
+            (save-match-data
+              (let* ((have-timestamp              (memq 'timestamp logview--submode-features))
+                     (have-level                  (memq 'level     logview--submode-features))
+                     (have-name                   (memq 'name      logview--submode-features))
+                     (have-thread                 (memq 'thread    logview--submode-features))
+                     (validator                   (cdr logview--current-filter))
+                     (difference-base             logview--timestamp-difference-base)
+                     (difference-bases-per-thread logview--timestamp-difference-per-thread-bases)
+                     (displaying-differences      (or difference-base difference-bases-per-thread))
+                     (difference-format-string    logview--timestamp-difference-format-string)
+                     (highlighter                 (cdr logview--highlighted-filter))
+                     (highlighted-part            logview-highlighted-entry-part)
+                     found-anything-visible)
+                (logview--iterate-entries-forward
+                 region-start
+                 (lambda (entry start)
+                   (let ((end (logview--entry-end entry start))
+                         filtered)
+                     (if (or (null validator) (funcall validator entry start))
+                         (progn
+                           (when have-level
+                             (let ((entry-faces (aref logview--submode-level-faces (logview--entry-level entry))))
+                               (put-text-property start end 'face (car entry-faces))
+                               (add-face-text-property (logview--entry-group-start entry start logview--level-group)
+                                                       (logview--entry-group-end   entry start logview--level-group)
+                                                       (cdr entry-faces))))
+                           (when have-timestamp
+                             (let ((from (logview--entry-group-start entry start logview--timestamp-group))
+                                   (to   (logview--entry-group-end   entry start logview--timestamp-group))
+                                   timestamp-replaced)
+                               (add-face-text-property from to 'logview-timestamp)
+                               (when displaying-differences
+                                 (let ((difference-base (or (when difference-bases-per-thread
+                                                              (gethash (logview--entry-group entry start logview--thread-group) difference-bases-per-thread))
+                                                            difference-base)))
+                                   (when (and difference-base (not (= (cdr difference-base) start)))
+                                     ;; FIXME: It is possible that fractionals are not the last
+                                     ;;        thing in the timestamp, in which case it would be
+                                     ;;        nicer to add some spaces on the right. However,
+                                     ;;        it's not easy to do and is also quite unlikely,
+                                     ;;        so ignoring that for now.
+                                     (let* ((difference        (- (logview--entry-timestamp entry start)
+                                                                  (logview--entry-timestamp (car difference-base) (cdr difference-base))))
+                                            (difference-string (format difference-format-string difference))
+                                            (length-delta      (- to from (length difference-string))))
+                                       (when (> length-delta 0)
+                                         (setq difference-string (concat (make-string length-delta ? ) difference-string)))
+                                       (put-text-property from to 'display difference-string)
+                                       (setq timestamp-replaced t)))))
+                               (unless timestamp-replaced
+                                 (remove-list-of-text-properties from to '(display)))))
+                           (when have-name
+                             (add-face-text-property (logview--entry-group-start entry start logview--name-group)
+                                                     (logview--entry-group-end   entry start logview--name-group)
+                                                     'logview-name))
+                           (when have-thread
+                             (add-face-text-property (logview--entry-group-start entry start logview--thread-group)
+                                                     (logview--entry-group-end   entry start logview--thread-group)
+                                                     'logview-thread))
+                           (when (and highlighter (funcall highlighter entry start))
+                             (add-face-text-property (if (eq highlighted-part 'message) (logview--entry-message-start entry start) start)
+                                                     (if (eq highlighted-part 'header)  (logview--space-back (logview--entry-message-start entry start)) end)
+                                                     'logview-highlight)))
+                       (setq filtered t))
+                     (when (logview--update-entry-invisibility start (logview--entry-details-start entry start) end filtered 'propagate 'propagate)
+                       (setq found-anything-visible t))
+                     (or (< end region-end)
+                         ;; There appears to be a bug in displaying code for the unlikely case
+                         ;; that fontifying function hides all the text in the region it has
+                         ;; been called for: Emacs still displays an empty line or at least the
+                         ;; ellipses to denote hidden text (i.e. not merged with the previous
+                         ;; ellipses).  So, to avoid this bug we just continue.  Besides, font
+                         ;; lock would do this anyway.
+                         (not found-anything-visible))))))))))))
+  `(jit-lock-bounds ,region-start . ,region-end))
+
+;; Returns non-nil if any part of the entry is visible as a result.
+(defun logview--update-entry-invisibility (start details-start end filtered entry-manually-hidden details-manually-hidden)
+  (let ((first-line-end-lf-back (logview--character-back (or details-start end)))
+        (invisible              (get-text-property (or details-start start) 'invisible))
+        new-invisible
+        fully-invisible)
+    (dolist (element (if (listp invisible) invisible (list invisible)))
+      (cond ((and (eq filtered                'propagate) (eq element logview--filtered-symbol))
+             (setq filtered t))
+            ((and (eq entry-manually-hidden   'propagate) (eq element logview--hidden-entry-symbol))
+             (setq entry-manually-hidden t))
+            ((and (eq details-manually-hidden 'propagate) (eq element logview--hidden-details-symbol))
+             (setq details-manually-hidden t))
+            ((not (and (symbolp element) (string-match "^logview-" (symbol-name element))))
+             (push element new-invisible))))
+    (when (eq entry-manually-hidden t)
+      (push logview--hidden-entry-symbol new-invisible)
+      (setq fully-invisible t))
+    (when (eq filtered t)
+      (push logview--filtered-symbol new-invisible)
+      (setq fully-invisible t))
+    (if new-invisible
+        (put-text-property (logview--character-back-checked start) first-line-end-lf-back 'invisible (setq new-invisible (nreverse new-invisible)))
+      (remove-list-of-text-properties (logview--character-back-checked start) first-line-end-lf-back '(invisible)))
+    (when details-start
+      (when (eq details-manually-hidden t)
+        (push logview--hidden-details-symbol new-invisible))
+      (push 'logview-details new-invisible)
+      (put-text-property first-line-end-lf-back (logview--character-back end) 'invisible new-invisible))
+    (not fully-invisible)))
 
 (defun logview--buffer-substring-filter (begin end delete)
   "Optionally remove invisible text from the substring."
@@ -2563,16 +3156,14 @@ Optional third argument is to make the function suitable for
 (defun logview--isearch-filter-predicate (begin end)
   (and (funcall (default-value 'isearch-filter-predicate) begin end)
        (or (not logview-search-only-in-messages)
-             (logview--std-matching
-               (save-match-data
-                 (save-restriction
-                   (widen)
-                   (goto-char begin)
-                   (or (not (logview--match-current-entry))
-                       (and (or (>= (match-beginning 0) end)
-                                (and (<= (match-end 0) begin)
-                                     (or (not (logview--match-successive-entries 1 t))
-                                         (>= (match-beginning 0) end))))))))))))
+           (logview--std-temporarily-widening
+             (let ((entry+start (logview--do-locate-current-entry begin)))
+               (when entry+start
+                 (let* ((entry         (car entry+start))
+                        (start         (cdr entry+start))
+                        (message-start (logview--entry-message-start entry start))
+                        (message-end   (logview--entry-end entry start)))
+                   (and (>= begin message-start) (<= end message-end)))))))))
 
 ;; Exists for potential future expansion.
 (defun logview--kill-emacs-hook ()
@@ -2621,7 +3212,8 @@ Optional third argument is to make the function suitable for
                              (push view combined-views)))
                          (setq logview--views (nreverse combined-views)))
                      (setq logview--views             new-views
-                           logview--views-need-saving t))))
+                           logview--views-need-saving t))
+                   (logview--after-updating-view-definitions)))
                (funcall do-quit)
                ;; This takes effect only after quitting.
                (logview--update-mode-name))
@@ -2632,8 +3224,7 @@ Optional third argument is to make the function suitable for
           (when (string-prefix-p logview-filter-edit--filters-hint-comment filters)
             (setq filters (substring filters (length logview-filter-edit--filters-hint-comment))))
           (setq logview--current-filter-text filters)
-          (logview--parse-filters)
-          (logview--apply-parsed-filters))))))
+          (logview--parse-filters))))))
 
 (defun logview-filter-edit--initialize-text (&optional filters-text)
   (delete-region 1 (1+ (buffer-size)))
@@ -2694,7 +3285,7 @@ Optional third argument is to make the function suitable for
                     (put-text-property line-begin begin 'face 'logview-edit-filters-type-prefix)
                     (let ((level-string (buffer-substring-no-properties begin end))
                           (known-levels (with-current-buffer logview-filter-edit--parent-buffer
-                                          logview--submode-level-alist)))
+                                          logview--submode-level-data)))
                       (while (and level-string known-levels)
                         (if (string= (caar known-levels) level-string)
                             (setq level-string nil)
@@ -2706,7 +3297,7 @@ Optional third argument is to make the function suitable for
                       (while (let ((from (point)))
                                (put-text-property (- from 3) from 'face 'logview-edit-filters-type-prefix)
                                (forward-line)
-                               (put-text-property from (if (bolp) (logview--linefeed-back (point)) (point))
+                               (put-text-property from (if (bolp) (logview--character-back (point)) (point))
                                                   'face (unless valid 'error))
                                (when (< (point) end)
                                  (forward-char 3)
