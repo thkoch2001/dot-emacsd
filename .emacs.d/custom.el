@@ -14,7 +14,7 @@
  '(custom-enabled-themes (quote (solarized-dark)))
  '(custom-safe-themes
    (quote
-    ("8aebf25556399b58091e533e455dd50a6a9cba958cc4ebb0aab175863c25b9a4" default)))
+    ("0598c6a29e13e7112cfbc2f523e31927ab7dce56ebb2016b567e1eff6dc1fd4f" default)))
  '(delete-old-versions t)
  '(display-time-world-list
    (quote
@@ -127,7 +127,8 @@ headsep=10mm, footskip=12mm}
     ("/usr/share/doc/RFC/links/rfc%s.txt.gz" "/usr/share/doc/RFC/links/rfc%s.txt")))
  '(safe-local-variable-values
    (quote
-    ((org-use-property-inheritance . t)
+    ((gac-automatically-push-p . t)
+     (org-use-property-inheritance . t)
      (eval progn
            (flyspell-mode 1)
            (outline-minor-mode 1)
