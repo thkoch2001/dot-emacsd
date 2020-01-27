@@ -118,7 +118,7 @@ headsep=10mm, footskip=12mm}
      ("melpa-stable" . "https://stable.melpa.org/packages/")
      ("melpa" . "https://melpa.org/packages/"))))
  '(package-check-signature (quote allow-unsigned))
- '(package-selected-packages (quote (git-auto-commit-mode logview)))
+ '(package-selected-packages (quote (org-drill git-auto-commit-mode logview)))
  '(package-unsigned-archives (quote ("https://stable.melpa.org/packages/")))
  '(projectile-global-mode t)
  '(require-final-newline nil)
