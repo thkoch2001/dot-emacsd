@@ -25,6 +25,8 @@
 
 (require 'uniquify)
 
+(require 'org-drill)
+
 (defun sm (&optional b e) "run sm with the current region as input"
   (interactive "r")
   (shell-command-on-region b e "sm -")
