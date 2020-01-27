@@ -114,8 +114,9 @@ headsep=10mm, footskip=12mm}
  '(org-use-speed-commands t)
  '(package-archives
    (quote
-    (("gnu" . "http://elpa.gnu.org/packages/")
-     ("melpa-stable" . "https://stable.melpa.org/packages/"))))
+    (("gnu" . "https://elpa.gnu.org/packages/")
+     ("melpa-stable" . "https://stable.melpa.org/packages/")
+     ("melpa" . "https://melpa.org/packages/"))))
  '(package-check-signature (quote allow-unsigned))
  '(package-selected-packages (quote (git-auto-commit-mode logview)))
  '(package-unsigned-archives (quote ("https://stable.melpa.org/packages/")))
