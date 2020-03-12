@@ -27,6 +27,11 @@
 
 (require 'org-drill)
 
+(require 'projectile)
+;; (define-key projectile-mode-map (kbd "s-p") 'projectile-command-map)
+(define-key projectile-mode-map (kbd "C-c p") 'projectile-command-map)
+(projectile-mode +1)
+
 (defun sm (&optional b e) "run sm with the current region as input"
   (interactive "r")
   (shell-command-on-region b e "sm -")
