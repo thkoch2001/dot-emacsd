@@ -27,6 +27,7 @@
 
 (require 'org-drill)
 
+(require 'subr-x) -- https://github.com/bbatsov/projectile/issues/1382
 (require 'projectile)
 ;; (define-key projectile-mode-map (kbd "s-p") 'projectile-command-map)
 (define-key projectile-mode-map (kbd "C-c p") 'projectile-command-map)
