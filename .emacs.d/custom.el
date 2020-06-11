@@ -35,6 +35,8 @@
  '(indent-tabs-mode nil)
  '(indicate-empty-lines t)
  '(inhibit-startup-screen t)
+ '(initial-major-mode (quote org-mode))
+ '(initial-scratch-message nil)
  '(kept-new-versions 6)
  '(lpr-command "xpp")
  '(org-agenda-files (quote ("~/org")))
